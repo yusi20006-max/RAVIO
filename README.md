@@ -41,6 +41,29 @@
 
 ---
 
+## استقرار رایگان روی Cloudflare
+
+راویو برای انتشار عمومی از Cloudflare Pages به‌همراه Pages Functions استفاده می‌کند؛ رابط React/Vite به‌صورت Static منتشر می‌شود و APIهای زیر روی همان دامنه اجرا می‌شوند:
+
+- `GET /api/health` — سلامت سرویس و وضعیت پیکربندی Gemini
+- `GET /api/rss?url=...` — پروکسی RSS با محدودیت حجم، بررسی URL و کنترل Redirect
+- `POST /api/gemini/script` — تولید بولتن خبری فارسی
+- `POST /api/gemini/tts` — تولید فایل صوتی WAV
+
+### تنظیمات محیطی Cloudflare
+
+در تنظیمات پروژه Pages، متغیرهای محیطی Production را تنظیم کنید:
+
+| متغیر | نوع | کاربرد |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | Secret | کلید Gemini؛ فقط سمت سرور |
+| `ALLOWED_ORIGINS` | Plain text | `https://ravio.pages.dev,capacitor://localhost,https://localhost` |
+| `NODE_VERSION` | Plain text | `22` |
+
+`RAVIO_API_SECRET` عمداً تنظیم نشده است؛ نسخه فعلی APK این هدر را ارسال نمی‌کند. برای وب‌اپ، درخواست‌های API هم‌مبدأ هستند و نیازی به تنظیم Base URL ندارند. در ساخت APK، آدرس `https://ravio.pages.dev` به‌صورت پیش‌فرض در خروجی ثبت می‌شود.
+
+**محدودیت پلن رایگان:** Workers/Pages سهمیه و محدودیت مصرف دارند؛ اجرای TTS و درخواست‌های Gemini علاوه بر سهمیه Cloudflare، از سهمیه و هزینه احتمالی حساب Google AI استفاده می‌کند.
+
 ## فناوری‌های استفاده‌شده
 
 | بخش | فناوری |

@@ -136,6 +136,9 @@ test('Server and client AI error formatters classify auth, quota, timeout, and r
   assert.equal(keyErr.status, 401);
   assert.doesNotMatch(keyErr.message, /AIzaSy/);
 
+  const orKeyErr = formatGeminiServerError(new Error('OpenRouter error with sk-or-v1-abcdef1234567890'));
+  assert.doesNotMatch(orKeyErr.message, /sk-or-v1/);
+
   const quotaErr = formatGeminiServerError(new Error('429 RESOURCE_EXHAUSTED quota exceeded'));
   assert.equal(quotaErr.status, 429);
 

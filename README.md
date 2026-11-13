@@ -157,6 +157,35 @@ https://ravio.pages.dev
 
 ---
 
+## استقرار رایگان روی Cloudflare Pages
+
+راویو از یک معماری یکپارچه روی **Cloudflare Pages** استفاده می‌کند: رابط React/Vite به‌صورت فایل‌های Static منتشر می‌شود و درخواست‌های API از طریق Pages Functions به کد مشترک `cloudflare/worker.mjs` می‌رسند.
+
+**آدرس Production پروژه:** [https://ravio.pages.dev](https://ravio.pages.dev)
+
+### معماری و مسیرهای API
+- `GET /api/health` — بررسی سلامت API و وضعیت تنظیم `GEMINI_API_KEY`
+- `GET /api/rss?url=<RSS_URL>` — پروکسی امن RSS (با مسدودسازی SSRF، بررسی MIME/XML و سقف حجم ۲ مگابایت)
+- `POST /api/gemini/script` — تبدیل خبرها به بولتن فارسی (با Fallback خودکار مدل در خطاهای `404`/`503`)
+- `POST /api/gemini/tts` — تولید فایل صوتی WAV فارسی
+
+### تنظیمات Cloudflare Pages
+| گزینه | مقدار |
+| :--- | :--- |
+| **Build command** | `npm ci && npm run build` |
+| **Build output directory** | `dist` |
+| **Node.js version** | `22` (فایل `.nvmrc`) |
+| **Compatibility Flag** | `nodejs_compat` (فایل `wrangler.toml`) |
+| **`GEMINI_API_KEY`** | **Secret** (از Google AI Studio) |
+| **`GEMINI_API_KEY_FALLBACK`** | **Secret** (اختیاری — کلید دوم Gemini برای فال‌بک خودکار در خطای `429`/`401`/`503`) |
+| **`OPENROUTER_API_KEY`** | **Secret** (اختیاری — فال‌بک سمت سرور برای `/api/gemini/script` با مدل‌های OpenRouter) |
+| **`OPENROUTER_FALLBACK_MODEL`** | Plain text (اختیاری — مثلاً `google/gemini-2.5-flash` یا `deepseek/deepseek-chat-v3-0324:free`) |
+| **`ALLOWED_ORIGINS`** | `capacitor://localhost,https://localhost` |
+
+*(متغیر `RAVIO_API_SECRET` در صورت نیاز به احراز هویت اختصاصی فعال می‌شود؛ بدون تنظیم آن، APK اندروید با `VITE_BACKEND_URL=https://ravio.pages.dev` مستقیم به سرور متصل می‌شود.)*
+
+---
+
 ## نصب و راه‌اندازی محلی
 
 ### پیش‌نیازها

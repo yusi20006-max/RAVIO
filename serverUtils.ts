@@ -267,7 +267,9 @@ export function isLikelyXmlFeedBody(rawBody: string): boolean {
 
 export function formatGeminiServerError(err: unknown): { status: number; message: string } {
   const raw = err instanceof Error ? err.message : String(err || "");
-  const sanitized = raw.replace(/AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED]").trim();
+  const sanitized = raw
+    .replace(/AIza[0-9A-Za-z_-]{20,}|sk-or-[0-9A-Za-z_-]{10,}/g, "[REDACTED]")
+    .trim();
   const lower = sanitized.toLowerCase();
 
   if (
@@ -293,6 +295,18 @@ export function formatGeminiServerError(err: unknown): { status: number; message
     return {
       status: 429,
       message: "سهمیه یا محدودیت نرخ درخواست سرویس Gemini تکمیل شده است. لطفاً کمی بعد تلاش کنید.",
+    };
+  }
+
+  if (
+    lower.includes("503") ||
+    lower.includes("unavailable") ||
+    lower.includes("high demand") ||
+    lower.includes("overloaded")
+  ) {
+    return {
+      status: 503,
+      message: "مدل‌های هوش مصنوعی Gemini موقتاً با ترافیک بالا مواجه هستند؛ چند لحظه بعد دوباره تلاش کنید.",
     };
   }
 

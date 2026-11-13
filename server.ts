@@ -22,11 +22,16 @@ const MAX_TTS_CHARS = 12000;
 const geminiRateLimiter = new SlidingWindowRateLimiter(25, 10 * 60_000);
 const rssRateLimiter = new SlidingWindowRateLimiter(80, 5 * 60_000);
 
-function getGeminiClient(apiVersion?: string) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error("کلید GEMINI_API_KEY در تنظیمات سرور تعریف نشده است.");
-  }
+function getGeminiKeys(): string[] {
+  const raw = [
+    process.env.GEMINI_API_KEY || "",
+    process.env.GEMINI_API_KEY_FALLBACK || "",
+    ...String(process.env.GEMINI_API_KEYS || "").split(/[\s,;]+/),
+  ];
+  return [...new Set(raw.map((k) => k.trim()).filter(Boolean))];
+}
+
+function getGeminiClient(apiKey: string, apiVersion?: string) {
   return new GoogleGenAI({
     apiKey,
     ...(apiVersion ? { apiVersion } : {}),
@@ -36,6 +41,131 @@ function getGeminiClient(apiVersion?: string) {
       },
     },
   });
+}
+
+function isRetryableKeyOrModelError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err || "")).toLowerCase();
+  return (
+    msg.includes("404") ||
+    msg.includes("not_found") ||
+    msg.includes("not found") ||
+    msg.includes("503") ||
+    msg.includes("unavailable") ||
+    msg.includes("high demand") ||
+    msg.includes("overloaded") ||
+    msg.includes("429") ||
+    msg.includes("quota") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("rate limit") ||
+    msg.includes("401") ||
+    msg.includes("403") ||
+    msg.includes("api_key_invalid") ||
+    msg.includes("api key") ||
+    msg.includes("permission_denied")
+  );
+}
+
+async function generateOpenRouterScriptFallback(params: {
+  systemInstruction: string;
+  userPrompt: string;
+  items: Array<{ id: string; title: string; description: string }>;
+}) {
+  const orKey = String(process.env.OPENROUTER_API_KEY || "").trim();
+  if (!orKey) return null;
+
+  const customOrModel = String(process.env.OPENROUTER_FALLBACK_MODEL || "").trim();
+  const orModels = [
+    ...new Set(
+      [
+        customOrModel,
+        "google/gemini-2.5-flash",
+        "deepseek/deepseek-chat-v3-0324:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+      ].filter(Boolean)
+    ),
+  ];
+
+  const schemaHint = `\n\nخروجی باید دقیقاً یک آبجکت JSON معتبر با این کلیدها باشد:
+{
+  "broadcastTitle": "عنوان کوتاه فارسی بخش خبری",
+  "script": "متن کامل و یکپارچه گوینده رادیو به زبان فارسی",
+  "cards": [{ "id": "شناسه عین ورودی", "persianTitle": "تیتر فارسی", "persianSummary": "خلاصه دو خطی فارسی", "topic": "موضوع کوتاه" }]
+}`;
+
+  let lastErr: unknown = null;
+  for (const orModel of orModels) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 45_000);
+    try {
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${orKey}`,
+          "X-Title": "Ravio News Radio",
+        },
+        body: JSON.stringify({
+          model: orModel,
+          messages: [
+            { role: "system", content: params.systemInstruction + schemaHint },
+            { role: "user", content: params.userPrompt },
+          ],
+          response_format: { type: "json_object" },
+          temperature: 0.5,
+        }),
+        signal: controller.signal,
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      if (!response.ok) {
+        throw new Error(`${response.status} ${payload?.error?.message || "OpenRouter API error"}`);
+      }
+
+      const content = String(payload?.choices?.[0]?.message?.content || "").trim();
+      if (!content) throw new Error("پاسخ خالی از OpenRouter دریافت شد.");
+
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        const start = content.indexOf("{");
+        const end = content.lastIndexOf("}");
+        if (start !== -1 && end > start) {
+          parsed = JSON.parse(content.slice(start, end + 1));
+        } else {
+          throw new Error("پاسخ مدل OpenRouter در قالب JSON معتبر نبود.");
+        }
+      }
+
+      const rawCards = Array.isArray(parsed.cards)
+        ? (parsed.cards as Array<Record<string, unknown>>)
+        : [];
+      const cards = params.items.map((item, idx) => {
+        const match = rawCards.find((card) => card?.id === item.id) || rawCards[idx] || {};
+        return {
+          id: item.id,
+          persianTitle: String(match.persianTitle || item.title),
+          persianSummary: String(match.persianSummary || item.description || item.title),
+          topic: String(match.topic || "خبر روز"),
+        };
+      });
+
+      return {
+        broadcastTitle: String(parsed.broadcastTitle || "بخش خبری راویو"),
+        script: String(parsed.script || ""),
+        cards,
+        modelUsed: `openrouter/${orModel}`,
+      };
+    } catch (err) {
+      lastErr = err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr ?? new Error("خطا در سرویس پشتیبان OpenRouter");
 }
 
 function extractPcmFromWavOrRaw(buf: Buffer): Buffer {
@@ -249,7 +379,14 @@ async function startServer() {
   });
 
   app.get("/api/health", (_req, res) => {
-    res.json({ ok: true, timestamp: Date.now() });
+    const keys = getGeminiKeys();
+    res.json({
+      ok: true,
+      timestamp: Date.now(),
+      geminiConfigured: keys.length > 0,
+      fallbackGeminiConfigured: keys.length > 1,
+      openRouterConfigured: Boolean(String(process.env.OPENROUTER_API_KEY || "").trim()),
+    });
   });
 
   // Server-side RSS fetch fallback with SSRF + redirect + response size protection
@@ -327,8 +464,6 @@ async function startServer() {
         pubDate: String(it.pubDate || "").slice(0, 80),
       }));
 
-      const ai = getGeminiClient();
-
       const resolvedTimeLabel =
         (generatedAtLabel && generatedAtLabel.trim()) ||
         new Intl.DateTimeFormat("fa-IR-u-ca-persian", {
@@ -341,91 +476,140 @@ async function startServer() {
           hour12: false,
         }).format(new Date());
 
-      const toneGuide =
+      const toneInstruction =
         tone === "fast_brief"
-          ? "لحن سریع، موجز و تیترمحور مثل بولتن خبری کوتاه رادیویی (حدود ۶۰ تا ۹۰ ثانیه خوانش)."
+          ? "لحن سریع، موجز و تیترمحور مثل بولتن خبری کوتاه رادیویی."
           : tone === "analytical"
-            ? "لحن تحلیلی، عمیق و حرفه‌ای با توضیح پیامدهای خبرها و ارتباط خبرها به یکدیگر."
-            : "لحن گرم، صمیمی، حرفه‌ای و پرانرژی یک گوینده رادیوی صبحگاهی ایرانی با سلام و خوش‌آمدگویی و خداحافظی طبیعی.";
+            ? "لحن تحلیلی، عمیق و حرفه‌ای با توضیح پیامدهای خبرها و ارتباط آن‌ها."
+            : "لحن گرم، صمیمی، حرفه‌ای و پرانرژی گوینده رادیوی صبحگاهی ایرانی.";
 
-      const systemInstruction = `شما سردبیر و گوینده حرفه‌ای رادیوی هوشمند «راویو» (Ravio) هستید.
-وظیفه شما دریافت تیترها و خلاصه‌های خام خبری (به انگلیسی یا فارسی) و تبدیل آن‌ها به یک بخش خبری رادیویی یکپارچه به زبان فارسی معیار، روان، خوش‌خوان و بدون هیچ غلط نگارشی است.
-قوانین مهم:
-1. در همان جمله اولِ اسکریپت رادیویی، حتماً تاریخ و ساعت دقیق تهیه این بخش خبری (${resolvedTimeLabel}) را به‌صورت طبیعی و روان به فارسی اعلام کنید تا شنونده بداند خبر مربوط به چه روز و چه ساعتی است (مثلاً: «سلام و وقت بخیر، امروز ${resolvedTimeLabel}، با بخش خبری راویو همراه شما هستیم.»).
-2. تمام خبرهای انگلیسی را به فارسی طبیعی و روزنامه‌نگارانه ترجمه و بازنویسی کنید.
-3. برای جلوگیری از تلفظ غلط موتور صوتی (TTS): هیچ کلمه، مخفف یا عدد انگلیسی/لاتین در متن اسکریپت (script) ننویسید؛ تمام نام‌های خارجی و مخفف‌ها را به فارسی خوش‌خوان آوانگاری کنید (مثلاً: AI -> هوش مصنوعی، BBC -> بی‌بی‌سی، CENTCOM -> سِنت‌کام، ADNOC -> اَدنوک). درصدها، واحد پول و اعداد را خوانا و فارسی بنویسید (مثلاً «۱۲ درصد»). روی واژه‌های فارسی دوپهلو (مثل بُعد، شَرکت، مُلک، سِمت) یا نام‌های ناآشنا اعراب کوتاه راهنما (فتحه/کسره/ضمه) بگذارید و نیم‌فاصله استاندارد (مثل «تازه‌ترین»، «می‌کنیم»، «منطقه‌ای») را حفظ کنید.
-4. خبرهای مرتبط را در کنار هم دسته‌بندی کنید و بین بخش‌ها جملات ربط رادیویی بنویسید (مثل «اما در ادامه اخبار فناوری...»).
-5. در متن اسکریپت رادیویی (script) از علائم مارک‌داون مثل * یا # یا ایموجی یا براکت یا پرانتز استفاده نکنید و جملات را کوتاه و خوش‌نفس با ویرگول فارسی (،) بنویسید.
-6. سبک اجرا: ${toneGuide}
-7. خروجی را دقیقاً مطابق اسکیما JSON برگردانید.`;
+      const systemInstruction = `شما سردبیر و گوینده حرفه‌ای رادیوی هوشمند راویو هستید. خبرهای خام انگلیسی یا فارسی را به بولتن رادیویی یکپارچه فارسی معیار تبدیل کنید. جمله اول باید تاریخ و ساعت تهیه خبر را طبیعی اعلام کند: ${resolvedTimeLabel}. نام‌های خارجی و مخفف‌ها را فارسی‌نویسی کنید؛ هیچ واژه یا عدد لاتین در اسکریپت نباشد. خبرهای مرتبط را دسته‌بندی و بین بخش‌ها جمله ربطی اضافه کنید. در اسکریپت مارک‌داون، ایموجی، براکت یا پرانتز نیاورید. سبک اجرا: ${toneInstruction} خروجی دقیقاً JSON مطابق اسکیما باشد.`;
 
       const promptPayload = boundedItems
         .map(
-          (item, index) =>
-            `[${index + 1}] ID: ${item.id}\nSource: ${item.source}\nDate: ${item.pubDate}\nTitle: ${item.title}\nSummary: ${item.description}\nLink: ${item.link}`
+          (it, idx) =>
+            `[${idx + 1}] ID: ${it.id}\nSource: ${it.source}\nDate: ${it.pubDate}\nTitle: ${it.title}\nSummary: ${it.description}\nLink: ${it.link}`
         )
         .join("\n\n");
 
+      const geminiKeys = getGeminiKeys();
+      const userPrompt = `دسته‌بندی: ${categoryLabel}\nتاریخ و ساعت تهیه خبر: ${resolvedTimeLabel}\n\nلیست خبرهای خام:\n${promptPayload}`;
+
       const requestedModel = model || "gemini-2.5-flash";
-      const candidateModels = [requestedModel, "gemini-4-hydrogen", "gemini-3.1-flash-lite"].filter(
-        (v, i, a) => a.indexOf(v) === i
-      );
+      const candidateModels = [
+        requestedModel,
+        "gemini-2.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-4-hydrogen",
+        "gemini-2.5-flash",
+      ].filter((v, i, a) => a.indexOf(v) === i);
 
       let lastError: unknown = null;
-      for (const targetModel of candidateModels) {
-        try {
-          const response = await ai.models.generateContent({
-            model: targetModel,
-            contents: `دسته‌بندی: ${categoryLabel}\nتاریخ و ساعت تهیه خبر: ${resolvedTimeLabel}\n\nلیست خبرهای خام:\n${promptPayload}`,
-            config: {
-              systemInstruction,
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  broadcastTitle: {
-                    type: Type.STRING,
-                    description: "عنوان کوتاه فارسی برای این بخش خبری رادیویی",
-                  },
-                  script: {
-                    type: Type.STRING,
-                    description:
-                      "متن کامل و یکپارچه گوینده رادیو به زبان فارسی روان بدون کاراکترهای مارک‌داون یا ایموجی",
-                  },
-                  cards: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        id: { type: Type.STRING },
-                        persianTitle: { type: Type.STRING },
-                        persianSummary: { type: Type.STRING },
-                        topic: { type: Type.STRING },
+      if (geminiKeys.length > 0) {
+        for (let kIdx = 0; kIdx < geminiKeys.length; kIdx++) {
+          const ai = getGeminiClient(geminiKeys[kIdx]);
+          let shouldTryNextKey = false;
+
+          for (const targetModel of candidateModels) {
+            try {
+              const response = await ai.models.generateContent({
+                model: targetModel,
+                contents: userPrompt,
+                config: {
+                  systemInstruction,
+                  responseMimeType: "application/json",
+                  responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                      broadcastTitle: {
+                        type: Type.STRING,
+                        description: "عنوان کوتاه فارسی برای این بخش خبری رادیویی",
                       },
-                      required: ["id", "persianTitle", "persianSummary", "topic"],
+                      script: {
+                        type: Type.STRING,
+                        description:
+                          "متن کامل و یکپارچه گوینده رادیو به زبان فارسی روان بدون کاراکترهای مارک‌داون یا ایموجی",
+                      },
+                      cards: {
+                        type: Type.ARRAY,
+                        items: {
+                          type: Type.OBJECT,
+                          properties: {
+                            id: { type: Type.STRING },
+                            persianTitle: { type: Type.STRING },
+                            persianSummary: { type: Type.STRING },
+                            topic: { type: Type.STRING },
+                          },
+                          required: ["id", "persianTitle", "persianSummary", "topic"],
+                        },
+                      },
                     },
+                    required: ["broadcastTitle", "script", "cards"],
                   },
                 },
-                required: ["broadcastTitle", "script", "cards"],
-              },
-            },
-          });
+              });
 
-          const rawJson = (response.text ?? "{}").trim();
-          const parsed = JSON.parse(rawJson);
-          res.json({ ...parsed, modelUsed: targetModel });
-          return;
-        } catch (err) {
-          lastError = err;
-          const msg = err instanceof Error ? err.message : String(err);
-          // Fallback to next candidate model only on model-not-found / unsupported errors
-          if (msg.includes("404") || msg.includes("NOT_FOUND") || msg.includes("not found")) {
+              const rawJson = (response.text ?? "{}").trim();
+              let parsed: Record<string, unknown>;
+              try {
+                parsed = JSON.parse(rawJson);
+              } catch {
+                const start = rawJson.indexOf("{");
+                const end = rawJson.lastIndexOf("}");
+                if (start !== -1 && end > start) {
+                  parsed = JSON.parse(rawJson.slice(start, end + 1));
+                } else {
+                  throw new Error("پاسخ مدل هوش مصنوعی در قالب JSON معتبر نبود.");
+                }
+              }
+              res.json({ ...parsed, modelUsed: targetModel });
+              return;
+            } catch (err) {
+              lastError = err;
+              if (isRetryableKeyOrModelError(err)) {
+                const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+                if (
+                  msg.includes("401") ||
+                  msg.includes("403") ||
+                  msg.includes("429") ||
+                  msg.includes("quota") ||
+                  msg.includes("api_key_invalid")
+                ) {
+                  shouldTryNextKey = true;
+                  break;
+                }
+                continue;
+              }
+              throw err;
+            }
+          }
+
+          if (!shouldTryNextKey && kIdx < geminiKeys.length - 1 && isRetryableKeyOrModelError(lastError)) {
             continue;
           }
-          throw err;
+          if (!shouldTryNextKey) break;
         }
       }
 
+      if (String(process.env.OPENROUTER_API_KEY || "").trim()) {
+        try {
+          const orResult = await generateOpenRouterScriptFallback({
+            systemInstruction,
+            userPrompt,
+            items: boundedItems,
+          });
+          if (orResult) {
+            res.json(orResult);
+            return;
+          }
+        } catch (orErr) {
+          lastError = lastError ?? orErr;
+        }
+      }
+
+      if (!geminiKeys.length) {
+        throw new Error("کلید GEMINI_API_KEY در تنظیمات سرور تعریف نشده است.");
+      }
       throw lastError ?? new Error("تولید متن رادیویی با خطا مواجه شد.");
     } catch (err) {
       const mapped = formatGeminiServerError(err);
@@ -451,7 +635,11 @@ async function startServer() {
         return;
       }
 
-      const ai = getGeminiClient("v1beta");
+      const geminiKeys = getGeminiKeys();
+      if (geminiKeys.length === 0) {
+        throw new Error("کلید GEMINI_API_KEY در تنظیمات سرور تعریف نشده است.");
+      }
+
       const preparedText = preparePersianTextForTts(text);
       const chunks = splitTextForTts(preparedText, 2200);
       const candidateModels = [model, "gemini-3.8-flash-lite-tts", "gemini-2.5-flash-preview-tts"].filter(
@@ -466,57 +654,78 @@ async function startServer() {
         let synthesizedChunk: Buffer | null = null;
         let lastErr: unknown = null;
 
-        for (const tryModel of i === 0 ? candidateModels : [activeModel]) {
-          try {
-            const isGemini38 = tryModel.includes("3.8");
-            const parts = isGemini38
-              ? [
-                  {
-                    text: chunkText,
-                    speechMetadata: {
-                      style:
-                        "Clear, warm, fluent Iranian morning radio news anchor speaking standard Persian with accurate ezafe, natural comma pauses, and correct pronunciation of Persian and transliterated names",
-                    },
-                  },
-                ]
-              : [
-                  {
-                    text: `این متن خبری را به زبان فارسی معیار، با تلفظ دقیق واژه‌های فارسی و اسامی خارجی، رعایت کامل کسره اضافه، مکث طبیعی روی ویرگول‌ها و لحن شفاف و گرم یک گوینده حرفه‌ای رادیو بخوان:\n\n${chunkText}`,
-                  },
-                ];
+        for (let kIdx = 0; kIdx < geminiKeys.length; kIdx++) {
+          const ai = getGeminiClient(geminiKeys[kIdx], "v1beta");
+          let tryNextKey = false;
 
-            const response = await ai.models.generateContent({
-              model: tryModel,
-              contents: [{ role: "user", parts }],
-              config: {
-                responseModalities: ["AUDIO"],
-                speechConfig: {
-                  voiceConfig: {
-                    prebuiltVoiceConfig: {
-                      voiceName,
+          for (const tryModel of i === 0 ? candidateModels : [activeModel]) {
+            try {
+              const isGemini38 = tryModel.includes("3.8");
+              const parts = isGemini38
+                ? [
+                    {
+                      text: chunkText,
+                      speechMetadata: {
+                        style:
+                          "Clear, warm, fluent Iranian morning radio news anchor speaking standard Persian with accurate ezafe, natural comma pauses, and correct pronunciation of Persian and transliterated names",
+                      },
+                    },
+                  ]
+                : [
+                    {
+                      text: `این متن خبری را به زبان فارسی معیار، با تلفظ دقیق واژه‌های فارسی و اسامی خارجی، رعایت کامل کسره اضافه، مکث طبیعی روی ویرگول‌ها و لحن شفاف و گرم یک گوینده حرفه‌ای رادیو بخوان:\n\n${chunkText}`,
+                    },
+                  ];
+
+              const response = await ai.models.generateContent({
+                model: tryModel,
+                contents: [{ role: "user", parts }],
+                config: {
+                  responseModalities: ["AUDIO"],
+                  speechConfig: {
+                    voiceConfig: {
+                      prebuiltVoiceConfig: {
+                        voiceName,
+                      },
                     },
                   },
                 },
-              },
-            });
+              });
 
-            const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            if (!base64Audio) {
-              throw new Error("پاسخ صوتی خالی از مدل دریافت شد.");
-            }
+              const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+              if (!base64Audio) {
+                throw new Error("پاسخ صوتی خالی از مدل دریافت شد.");
+              }
 
-            const rawBuf = Buffer.from(base64Audio, "base64");
-            synthesizedChunk = extractPcmFromWavOrRaw(rawBuf);
-            activeModel = tryModel;
-            break;
-          } catch (err) {
-            lastErr = err;
-            const msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes("404") || msg.includes("NOT_FOUND") || msg.includes("not found") || msg.includes("400")) {
-              continue;
+              const rawBuf = Buffer.from(base64Audio, "base64");
+              synthesizedChunk = extractPcmFromWavOrRaw(rawBuf);
+              activeModel = tryModel;
+              break;
+            } catch (err) {
+              lastErr = err;
+              const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+              if (isRetryableKeyOrModelError(err) || msg.includes("400")) {
+                if (
+                  msg.includes("401") ||
+                  msg.includes("403") ||
+                  msg.includes("429") ||
+                  msg.includes("quota") ||
+                  msg.includes("api_key_invalid")
+                ) {
+                  tryNextKey = true;
+                  break;
+                }
+                continue;
+              }
+              throw err;
             }
-            throw err;
           }
+
+          if (synthesizedChunk) break;
+          if (!tryNextKey && kIdx < geminiKeys.length - 1 && isRetryableKeyOrModelError(lastErr)) {
+            continue;
+          }
+          if (!tryNextKey) break;
         }
 
         if (!synthesizedChunk) {

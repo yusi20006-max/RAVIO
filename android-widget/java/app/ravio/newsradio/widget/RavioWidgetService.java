@@ -41,13 +41,17 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -87,14 +91,24 @@ public class RavioWidgetService extends Service {
         final String source;
         final String link;
         final String pubDate;
+        final long pubDateMillis;
 
-        RawNewsItem(String id, String title, String description, String source, String link, String pubDate) {
+        RawNewsItem(
+                String id,
+                String title,
+                String description,
+                String source,
+                String link,
+                String pubDate,
+                long pubDateMillis
+        ) {
             this.id = id;
             this.title = title;
             this.description = description;
             this.source = source;
             this.link = link;
             this.pubDate = pubDate;
+            this.pubDateMillis = pubDateMillis;
         }
     }
 
@@ -254,14 +268,27 @@ public class RavioWidgetService extends Service {
 
     private void startBuildAndPlay(final String categoryId) {
         final int taskSeq = generationSeq.incrementAndGet();
+        final long buildTimestamp = System.currentTimeMillis();
         stopAllPlayback();
         acquireWakeLock();
 
+        // Invalidate previous cached audio/script immediately so an old broadcast is never replayed as new
+        try {
+            File oldWav = new File(getCacheDir(), WAV_CACHE_NAME);
+            if (oldWav.exists()) oldWav.delete();
+        } catch (Exception ignored) {
+        }
+        RavioWidgetConfig.prefs(this).edit()
+                .putBoolean(RavioWidgetConfig.KEY_HAS_CACHED_AUDIO, false)
+                .putString(RavioWidgetConfig.KEY_LAST_SCRIPT, "")
+                .apply();
+
         final String categoryLabel = RavioWidgetConfig.getCategoryLabel(categoryId);
+        final String shortCat = RavioWidgetConfig.getShortCategoryLabel(categoryId);
         updateWidgetAndNotification(
                 RavioWidgetConfig.STATE_FETCHING,
                 "دریافت خبر...",
-                "در حال دریافت فیدهای «" + RavioWidgetConfig.getShortCategoryLabel(categoryId) + "»",
+                shortCat + " · در حال دریافت تازه‌ترین خبرها...",
                 false
         );
 
@@ -279,15 +306,22 @@ public class RavioWidgetService extends Service {
                     updateWidgetAndNotification(
                             RavioWidgetConfig.STATE_SCRIPTING,
                             "نگارش خبر...",
-                            "در حال تهیه بولتن «" + RavioWidgetConfig.getShortCategoryLabel(categoryId) + "»",
+                            shortCat + " · در حال نگارش بولتن جدید...",
                             false
                     );
 
                     SharedPreferences prefs = RavioWidgetConfig.prefs(RavioWidgetService.this);
                     String tone = prefs.getString(RavioWidgetConfig.KEY_BROADCAST_TONE, "morning_host");
                     String voice = prefs.getString(RavioWidgetConfig.KEY_GEMINI_VOICE, "Kore");
+                    String generatedAtLabel = RavioWidgetConfig.formatPersianFullDateTime(buildTimestamp);
 
-                    JSONObject scriptResult = requestScript(backendUrl, items, categoryLabel, tone);
+                    JSONObject scriptResult = requestScript(
+                            backendUrl,
+                            items,
+                            categoryLabel,
+                            tone,
+                            generatedAtLabel
+                    );
                     if (taskSeq != generationSeq.get()) return;
 
                     final String broadcastTitle = scriptResult.optString("broadcastTitle", categoryLabel);
@@ -296,22 +330,28 @@ public class RavioWidgetService extends Service {
                         throw new IllegalStateException("متن بولتن خالی بود.");
                     }
 
+                    final String widgetHeadline = RavioWidgetConfig.formatWidgetBroadcastHeadline(
+                            categoryId,
+                            buildTimestamp,
+                            broadcastTitle
+                    );
+
                     prefs.edit()
                             .putString(RavioWidgetConfig.KEY_LAST_SCRIPT, script)
-                            .putString(RavioWidgetConfig.KEY_WIDGET_TITLE, broadcastTitle)
+                            .putString(RavioWidgetConfig.KEY_WIDGET_TITLE, widgetHeadline)
                             .apply();
 
                     updateWidgetAndNotification(
                             RavioWidgetConfig.STATE_TTS,
                             "ساخت صدا...",
-                            broadcastTitle,
+                            widgetHeadline,
                             false
                     );
 
                     try {
                         byte[] wavBytes = requestTtsWav(backendUrl, script, voice);
                         if (taskSeq != generationSeq.get()) return;
-                        File wavFile = new File(getCacheDir(), WAV_CACHE_NAME);
+                        final File wavFile = new File(getCacheDir(), WAV_CACHE_NAME);
                         FileOutputStream fos = new FileOutputStream(wavFile);
                         try {
                             fos.write(wavBytes);
@@ -323,7 +363,7 @@ public class RavioWidgetService extends Service {
                             @Override
                             public void run() {
                                 if (taskSeq == generationSeq.get()) {
-                                    playWavFile(wavFile, broadcastTitle, categoryLabel);
+                                    playWavFile(wavFile, widgetHeadline, categoryLabel);
                                 }
                             }
                         });
@@ -335,7 +375,7 @@ public class RavioWidgetService extends Service {
                             @Override
                             public void run() {
                                 if (taskSeq == generationSeq.get()) {
-                                    speakWithAndroidTts(script, broadcastTitle, categoryLabel);
+                                    speakWithAndroidTts(script, widgetHeadline, categoryLabel);
                                 }
                             }
                         });
@@ -617,6 +657,8 @@ public class RavioWidgetService extends Service {
 
         List<List<RawNewsItem>> perCategoryItems = new ArrayList<>();
         Set<String> seenTitles = new LinkedHashSet<>();
+        long cacheBust = System.currentTimeMillis();
+        long recentCutoff = cacheBust - (48L * 60L * 60L * 1000L);
 
         for (String cat : targetCategories) {
             List<RavioWidgetConfig.FeedEntry> feeds = groupedFeeds.get(cat);
@@ -624,7 +666,11 @@ public class RavioWidgetService extends Service {
             if (feeds != null) {
                 for (RavioWidgetConfig.FeedEntry feed : feeds) {
                     try {
-                        String proxyUrl = backendUrl + "/api/rss?url=" + URLEncoder.encode(feed.url, "UTF-8");
+                        String proxyUrl = backendUrl
+                                + "/api/rss?url="
+                                + URLEncoder.encode(feed.url, "UTF-8")
+                                + "&_ts="
+                                + cacheBust;
                         String xml = httpGetText(proxyUrl, 12000);
                         List<RawNewsItem> parsed = parseRssOrAtom(xml, feed.label, cat);
                         for (RawNewsItem item : parsed) {
@@ -634,13 +680,27 @@ public class RavioWidgetService extends Service {
                                 catItems.add(item);
                             }
                         }
-                        if (catItems.size() >= maxItems) break;
                     } catch (Exception ignored) {
                     }
                 }
             }
+
             if (!catItems.isEmpty()) {
-                perCategoryItems.add(catItems);
+                // Sort newest-first by parsed pubDate timestamp
+                Collections.sort(catItems, new Comparator<RawNewsItem>() {
+                    @Override
+                    public int compare(RawNewsItem a, RawNewsItem b) {
+                        return Long.compare(b.pubDateMillis, a.pubDateMillis);
+                    }
+                });
+
+                List<RawNewsItem> recentOnly = new ArrayList<>();
+                for (RawNewsItem it : catItems) {
+                    if (it.pubDateMillis >= recentCutoff) {
+                        recentOnly.add(it);
+                    }
+                }
+                perCategoryItems.add(recentOnly.isEmpty() ? catItems : recentOnly);
             }
         }
 
@@ -721,9 +781,10 @@ public class RavioWidgetService extends Service {
                                     desc,
                                     source,
                                     link,
-                                    pubDate
+                                    pubDate,
+                                    parseRssDateMillis(pubDate)
                             ));
-                            if (list.size() >= 10) break;
+                            if (list.size() >= 15) break;
                         }
                     }
                 }
@@ -732,6 +793,38 @@ public class RavioWidgetService extends Service {
         } catch (Exception ignored) {
         }
         return list;
+    }
+
+    private static long parseRssDateMillis(String raw) {
+        if (raw == null) return 0L;
+        String s = raw.trim();
+        if (s.isEmpty()) return 0L;
+
+        // Normalize ISO-8601 timezone offsets (Z or +03:30) for broad Android API compatibility
+        String normalizedIso = s.replaceFirst("Z$", "+0000")
+                .replaceAll("([+-]\\d{2}):(\\d{2})$", "$1$2");
+
+        String[] patterns = {
+                "EEE, dd MMM yyyy HH:mm:ss Z",
+                "EEE, dd MMM yyyy HH:mm:ss z",
+                "dd MMM yyyy HH:mm:ss Z",
+                "yyyy-MM-dd'T'HH:mm:ssZ",
+                "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
+                "yyyy-MM-dd'T'HH:mm:ss",
+                "yyyy-MM-dd HH:mm:ss"
+        };
+
+        for (String pattern : patterns) {
+            try {
+                SimpleDateFormat sdf = new SimpleDateFormat(pattern, Locale.US);
+                sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
+                String candidate = pattern.startsWith("yyyy") ? normalizedIso : s;
+                Date d = sdf.parse(candidate);
+                if (d != null) return d.getTime();
+            } catch (Exception ignored) {
+            }
+        }
+        return 0L;
     }
 
     private static String safeNextText(XmlPullParser parser) {
@@ -759,7 +852,8 @@ public class RavioWidgetService extends Service {
             String backendUrl,
             List<RawNewsItem> items,
             String categoryLabel,
-            String tone
+            String tone,
+            String generatedAtLabel
     ) throws Exception {
         JSONArray arr = new JSONArray();
         for (RawNewsItem it : items) {
@@ -777,6 +871,7 @@ public class RavioWidgetService extends Service {
         body.put("categoryLabel", categoryLabel);
         body.put("tone", tone);
         body.put("model", "gemini-2.5-flash");
+        body.put("generatedAtLabel", generatedAtLabel);
 
         String responseText = httpPostJson(backendUrl + "/api/gemini/script", body.toString(), 65000);
         return new JSONObject(responseText);
@@ -801,8 +896,11 @@ public class RavioWidgetService extends Service {
     private static String httpGetText(String urlStr, int timeoutMs) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
         conn.setRequestMethod("GET");
+        conn.setUseCaches(false);
         conn.setConnectTimeout(timeoutMs);
         conn.setReadTimeout(timeoutMs);
+        conn.setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0");
+        conn.setRequestProperty("Pragma", "no-cache");
         conn.setRequestProperty("Accept", "application/xml, application/rss+xml, text/xml, */*");
         return readHttpResponse(conn);
     }

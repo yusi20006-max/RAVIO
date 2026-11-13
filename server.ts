@@ -289,6 +289,8 @@ async function fetchSafeRssFeed(initialUrl: string, signal: AbortSignal): Promis
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; RavioNewsBot/1.0)",
         Accept: "application/rss+xml, application/xml, text/xml, */*",
+        "Cache-Control": "no-cache, no-store, max-age=0",
+        Pragma: "no-cache",
       },
     });
 
@@ -421,6 +423,7 @@ async function startServer() {
           return;
         }
         res.setHeader("Content-Type", "application/xml; charset=utf-8");
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
         res.send(xmlText);
       } finally {
         clearTimeout(timer);
@@ -474,6 +477,7 @@ async function startServer() {
           hour: "2-digit",
           minute: "2-digit",
           hour12: false,
+          timeZone: "Asia/Tehran",
         }).format(new Date());
 
       const toneInstruction =

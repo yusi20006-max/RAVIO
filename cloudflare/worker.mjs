@@ -217,6 +217,8 @@ async function fetchFeed(raw, signal) {
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; RavioNewsBot/1.0)",
         Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+        "Cache-Control": "no-cache, no-store, max-age=0",
+        Pragma: "no-cache",
       },
     });
     if (r.status >= 300 && r.status < 400) {
@@ -580,6 +582,7 @@ async function makeScript(b, env) {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
+      timeZone: "Asia/Tehran",
     }).format(new Date());
 
   const toneText =
@@ -817,7 +820,7 @@ async function handle(request, env) {
           headers: {
             ...ch,
             "Content-Type": "application/xml; charset=utf-8",
-            "Cache-Control": "no-store",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
           },
         });
       } finally {

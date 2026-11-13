@@ -18,8 +18,8 @@
 
         <ImageView
             android:id="@+id/img_widget_logo"
-            android:layout_width="22dp"
-            android:layout_height="22dp"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
             android:contentDescription="@string/app_name"
             android:src="@mipmap/ic_launcher" />
 
@@ -27,13 +27,13 @@
             android:id="@+id/txt_widget_brand"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="6dp"
             android:layout_weight="1"
             android:ellipsize="end"
             android:maxLines="1"
             android:text="راویو · رادیوی رانندگی"
             android:textColor="#FFFFFF"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:textStyle="bold" />
 
         <TextView
@@ -43,9 +43,9 @@
             android:background="@drawable/ravio_widget_status_badge"
             android:maxLines="1"
             android:paddingStart="8dp"
-            android:paddingTop="3dp"
+            android:paddingTop="2dp"
             android:paddingEnd="8dp"
-            android:paddingBottom="3dp"
+            android:paddingBottom="2dp"
             android:text="آماده"
             android:textColor="#FACC15"
             android:textSize="11sp"
@@ -56,14 +56,14 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="6dp"
         android:orientation="horizontal"
         android:weightSum="5">
 
         <TextView
             android:id="@+id/btn_cat_combined"
             android:layout_width="0dp"
-            android:layout_height="34dp"
+            android:layout_height="30dp"
             android:layout_marginEnd="4dp"
             android:layout_weight="1"
             android:background="@drawable/ravio_widget_chip_active"
@@ -78,7 +78,7 @@
         <TextView
             android:id="@+id/btn_cat_iran"
             android:layout_width="0dp"
-            android:layout_height="34dp"
+            android:layout_height="30dp"
             android:layout_marginEnd="4dp"
             android:layout_weight="1"
             android:background="@drawable/ravio_widget_chip_inactive"
@@ -93,7 +93,7 @@
         <TextView
             android:id="@+id/btn_cat_world"
             android:layout_width="0dp"
-            android:layout_height="34dp"
+            android:layout_height="30dp"
             android:layout_marginEnd="4dp"
             android:layout_weight="1"
             android:background="@drawable/ravio_widget_chip_inactive"
@@ -108,7 +108,7 @@
         <TextView
             android:id="@+id/btn_cat_economy"
             android:layout_width="0dp"
-            android:layout_height="34dp"
+            android:layout_height="30dp"
             android:layout_marginEnd="4dp"
             android:layout_weight="1"
             android:background="@drawable/ravio_widget_chip_inactive"
@@ -123,7 +123,7 @@
         <TextView
             android:id="@+id/btn_cat_tech"
             android:layout_width="0dp"
-            android:layout_height="34dp"
+            android:layout_height="30dp"
             android:layout_weight="1"
             android:background="@drawable/ravio_widget_chip_inactive"
             android:ellipsize="end"
@@ -135,23 +135,27 @@
             android:textStyle="bold" />
     </LinearLayout>
 
-    <!-- Headline / Current Broadcast Summary -->
+    <!-- Headline / Category + Date & Time + Broadcast Title -->
     <TextView
         android:id="@+id/txt_widget_headline"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="7dp"
+        android:layout_height="0dp"
+        android:layout_marginTop="5dp"
+        android:layout_weight="1"
         android:ellipsize="end"
-        android:maxLines="1"
+        android:gravity="center_vertical|start"
+        android:lineSpacingExtra="2dp"
+        android:maxLines="2"
         android:text="دسته را انتخاب کنید و «بساز و پخش کن» را بزنید"
-        android:textColor="#D4D4D8"
-        android:textSize="12sp" />
+        android:textColor="#F4F4F5"
+        android:textSize="11.5sp"
+        android:textStyle="bold" />
 
     <!-- Row 3: Oversized Driving Action Buttons -->
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:layout_marginTop="7dp"
+        android:layout_height="42dp"
+        android:layout_marginTop="5dp"
         android:orientation="horizontal"
         android:weightSum="5">
 

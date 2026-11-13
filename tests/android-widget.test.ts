@@ -76,6 +76,18 @@ test("applyAndroidWidget injects widget layout, 5-category buttons, Java classes
 
     const configJava = fs.readFileSync(path.join(widgetPkg, "RavioWidgetConfig.java"), "utf8");
     assert.match(configJava, /DEFAULT_BACKEND_URL = "https:\/\/ravio\.pages\.dev";/);
+    assert.match(configJava, /formatPersianShortDateTime/);
+    assert.match(configJava, /formatPersianFullDateTime/);
+    assert.match(configJava, /formatWidgetBroadcastHeadline/);
+
+    const serviceJava = fs.readFileSync(path.join(widgetPkg, "RavioWidgetService.java"), "utf8");
+    assert.match(serviceJava, /oldWav\.delete\(\)/);
+    assert.match(serviceJava, /setUseCaches\(false\)/);
+    assert.match(serviceJava, /&_ts=/);
+    assert.match(serviceJava, /parseRssDateMillis/);
+    assert.match(serviceJava, /Long\.compare\(b\.pubDateMillis, a\.pubDateMillis\)/);
+    assert.match(serviceJava, /generatedAtLabel/);
+    assert.match(serviceJava, /formatWidgetBroadcastHeadline/);
 
     const layoutXml = fs.readFileSync(
       path.join(appMain, "res", "layout", "ravio_drive_widget.xml"),
@@ -92,6 +104,7 @@ test("applyAndroidWidget injects widget layout, 5-category buttons, Java classes
     ]) {
       assert.ok(layoutXml.includes(`@+id/${id}`), `Widget layout missing ${id}`);
     }
+    assert.match(layoutXml, /android:maxLines="2"/);
     assert.doesNotMatch(layoutXml, /<androidx\.|<com\.google\./);
 
     const manifest = fs.readFileSync(path.join(appMain, "AndroidManifest.xml"), "utf8");

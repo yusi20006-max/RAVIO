@@ -3,8 +3,10 @@ package app.ravio.newsradio.widget;
 import android.content.Context;
 import android.content.SharedPreferences;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -177,5 +179,105 @@ public final class RavioWidgetConfig {
             ed.putString(KEY_WIDGET_TITLE, headline);
         }
         ed.apply();
+    }
+
+    public static String toPersianDigits(String raw) {
+        if (raw == null) return "";
+        char[] persian = {'۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'};
+        StringBuilder sb = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (ch >= '0' && ch <= '9') {
+                sb.append(persian[ch - '0']);
+            } else {
+                sb.append(ch);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static int[] gregorianToJalali(int gy, int gm, int gd) {
+        int[] gDm = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+        int gy2 = (gm > 2) ? (gy + 1) : gy;
+        int days = 355666 + (365 * gy) + ((gy2 + 3) / 4) - ((gy2 + 99) / 100) + ((gy2 + 399) / 400) + gd + gDm[gm - 1];
+        int jy = -1595 + (33 * (days / 12053));
+        days %= 12053;
+        jy += 4 * (days / 1461);
+        days %= 1461;
+        if (days > 365) {
+            jy += (days - 1) / 365;
+            days = (days - 1) % 365;
+        }
+        int jm = (days < 186) ? (1 + days / 31) : (7 + (days - 186) / 30);
+        int jd = 1 + ((days < 186) ? (days % 31) : ((days - 186) % 30));
+        return new int[]{jy, jm, jd};
+    }
+
+    private static String jalaliMonthName(int month) {
+        String[] months = {
+                "", "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+                "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"
+        };
+        return (month >= 1 && month <= 12) ? months[month] : "";
+    }
+
+    private static String persianWeekdayName(int dayOfWeek) {
+        switch (dayOfWeek) {
+            case Calendar.SATURDAY: return "شنبه";
+            case Calendar.SUNDAY: return "یکشنبه";
+            case Calendar.MONDAY: return "دوشنبه";
+            case Calendar.TUESDAY: return "سه‌شنبه";
+            case Calendar.WEDNESDAY: return "چهارشنبه";
+            case Calendar.THURSDAY: return "پنجشنبه";
+            case Calendar.FRIDAY: return "جمعه";
+            default: return "";
+        }
+    }
+
+    public static String formatPersianShortDateTime(long epochMillis) {
+        Calendar cal = Calendar.getInstance();
+        cal.setTimeInMillis(epochMillis);
+        int[] j = gregorianToJalali(
+                cal.get(Calendar.YEAR),
+                cal.get(Calendar.MONTH) + 1,
+                cal.get(Calendar.DAY_OF_MONTH)
+        );
+        String hm = String.format(
+                Locale.US,
+                "%02d:%02d",
+                cal.get(Calendar.HOUR_OF_DAY),
+                cal.get(Calendar.MINUTE)
+        );
+        return toPersianDigits(j[2] + " " + jalaliMonthName(j[1]) + " " + j[0] + " · " + hm);
+    }
+
+    public static String formatPersianFullDateTime(long epochMillis) {
+        Calendar cal = Calendar.getInstance();
+        cal.setTimeInMillis(epochMillis);
+        int[] j = gregorianToJalali(
+                cal.get(Calendar.YEAR),
+                cal.get(Calendar.MONTH) + 1,
+                cal.get(Calendar.DAY_OF_MONTH)
+        );
+        String hm = String.format(
+                Locale.US,
+                "%02d:%02d",
+                cal.get(Calendar.HOUR_OF_DAY),
+                cal.get(Calendar.MINUTE)
+        );
+        String weekday = persianWeekdayName(cal.get(Calendar.DAY_OF_WEEK));
+        return toPersianDigits(
+                weekday + " " + j[2] + " " + jalaliMonthName(j[1]) + " " + j[0] + "، ساعت " + hm
+        );
+    }
+
+    public static String formatWidgetBroadcastHeadline(String categoryId, long epochMillis, String broadcastTitle) {
+        String typeLabel = getShortCategoryLabel(categoryId);
+        String dateTime = formatPersianShortDateTime(epochMillis);
+        String cleanTitle = broadcastTitle == null ? "" : broadcastTitle.trim();
+        if (cleanTitle.isEmpty()) {
+            return typeLabel + " · " + dateTime;
+        }
+        return typeLabel + " · " + dateTime + " — " + cleanTitle;
     }
 }

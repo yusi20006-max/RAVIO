@@ -1,0 +1,8 @@
+{
+  "name": "رادیو خبر هوشمند",
+  "description": "استودیوی خبر رادیویی هوشمند به زبان فارسی با قابلیت حالت رانندگی، دریافت فید RSS، تنظیم متن رادیویی و تولید فایل صوتی آنلاین و آفلاین",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

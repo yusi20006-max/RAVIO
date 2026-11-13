@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0B0D10"/>
+  <circle cx="256" cy="256" r="210" fill="#13171D"/>
+  <!-- Outer broadcast arc -->
+  <path d="M132 256a124 124 0 0 1 248 0" fill="none" stroke="#F59E0B" stroke-width="26" stroke-linecap="round" opacity="0.45"/>
+  <path d="M172 256a84 84 0 0 1 168 0" fill="none" stroke="#F59E0B" stroke-width="26" stroke-linecap="round" opacity="0.8"/>
+  <!-- Studio microphone capsule -->
+  <rect x="220" y="204" width="72" height="114" rx="36" fill="#FBBF24"/>
+  <!-- Stand stem -->
+  <path d="M190 284a66 66 0 0 0 132 0" fill="none" stroke="#F8FAFC" stroke-width="22" stroke-linecap="round"/>
+  <line x1="256" y1="350" x2="256" y2="394" stroke="#F8FAFC" stroke-width="22" stroke-linecap="round"/>
+  <line x1="212" y1="394" x2="300" y2="394" stroke="#F8FAFC" stroke-width="22" stroke-linecap="round"/>
+</svg>

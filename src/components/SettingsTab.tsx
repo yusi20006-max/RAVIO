@@ -1004,9 +1004,17 @@ export function SettingsTab({
       >
         <div className="bg-[#0E1116] border border-white/10 rounded-xl p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm sm:text-base font-extrabold text-white">Ravio · راویو</h3>
-              <p className="text-xs text-amber-400 font-medium mt-0.5">روایتِ هوشمندِ خبر</p>
+            <div className="flex items-center gap-3">
+              <img
+                src="/pwa-192x192.png"
+                alt="لوگوی راویو"
+                referrerPolicy="no-referrer"
+                className="w-12 h-12 rounded-xl border border-amber-500/30 object-cover shrink-0"
+              />
+              <div>
+                <h3 className="text-sm sm:text-base font-extrabold text-white">Ravio · راویو</h3>
+                <p className="text-xs text-amber-400 font-medium mt-0.5">روایتِ هوشمندِ خبر</p>
+              </div>
             </div>
             <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/35 text-xs font-mono-tabular font-bold text-amber-300">
               v{APP_VERSION}

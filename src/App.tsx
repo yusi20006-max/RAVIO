@@ -554,14 +554,22 @@ export default function App() {
       {/* 3-Zone Top Bar Contract */}
       <header className="sticky top-0 z-30 h-14 bg-[#0B0D10]/90 backdrop-blur-md border-b border-white/10 pt-safe">
         <div className="max-w-7xl mx-auto h-full px-4 sm:px-6 flex items-center justify-between gap-4 sm:gap-8">
-          {/* Zone 1: Brand Wordmark + Tagline */}
-          <div className="flex flex-col justify-center leading-tight shrink-0">
-            <span className="text-sm sm:text-lg font-extrabold tracking-tight text-white whitespace-nowrap">
-              Ravio · راویو
-            </span>
-            <span className="text-[10px] sm:text-[11px] font-medium text-amber-400/90 whitespace-nowrap">
-              روایتِ هوشمندِ خبر
-            </span>
+          {/* Zone 1: Brand Icon + Wordmark + Tagline */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            <img
+              src="/pwa-192x192.png"
+              alt="آیکون راویو"
+              referrerPolicy="no-referrer"
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-amber-500/25 object-cover shrink-0"
+            />
+            <div className="flex flex-col justify-center leading-tight">
+              <span className="text-sm sm:text-lg font-extrabold tracking-tight text-white whitespace-nowrap">
+                Ravio · راویو
+              </span>
+              <span className="text-[10px] sm:text-[11px] font-medium text-amber-400/90 whitespace-nowrap">
+                روایتِ هوشمندِ خبر
+              </span>
+            </div>
           </div>
 
           {/* Zone 2: Desktop Single-Line Navigation */}

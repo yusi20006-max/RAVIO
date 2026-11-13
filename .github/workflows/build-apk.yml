@@ -14,7 +14,7 @@ on:
       backend_url:
         description: "آدرس سرور مستقرشده (اختیاری - مثال: https://your-app.run.app)"
         required: false
-        default: ""
+        default: "https://ravio.pages.dev"
 
 jobs:
   build-apk:
@@ -59,7 +59,7 @@ jobs:
 
       - name: Build web assets (Vite)
         env:
-          VITE_BACKEND_URL: ${{ github.event.inputs.backend_url || vars.VITE_BACKEND_URL || '' }}
+          VITE_BACKEND_URL: ${{ github.event.inputs.backend_url || vars.VITE_BACKEND_URL || 'https://ravio.pages.dev' }}
         run: npm run build
 
       - name: Add and sync Capacitor Android project

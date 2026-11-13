@@ -69,6 +69,11 @@ jobs:
           fi
           npx cap sync android
 
+      - name: Inject Ravio Android Home Screen Driving Widget
+        env:
+          VITE_BACKEND_URL: ${{ github.event.inputs.backend_url || vars.VITE_BACKEND_URL || 'https://ravio.pages.dev' }}
+        run: node scripts/apply-android-widget.mjs android
+
       - name: Apply Ravio app icons to Android mipmaps
         run: |
           for dir in android/app/src/main/res/mipmap-*; do

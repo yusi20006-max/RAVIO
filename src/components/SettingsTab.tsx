@@ -988,6 +988,16 @@ export function SettingsTab({
           راویو را می‌توانید مستقیماً روی گوشی و تلویزیون نصب کنید یا از منابع RSS و تنظیمات خود خروجی بگیرید و در نسخه APK (آماده‌شده با Capacitor) بازیابی نمایید.
         </p>
 
+        <div className="bg-[#0E1116] border border-amber-500/25 rounded-xl p-3 text-xs text-zinc-300 leading-relaxed space-y-1">
+          <strong className="text-amber-300 block">
+            ویجت صفحه اصلی اندروید (۴×۲ · مخصوص رانندگی):
+          </strong>
+          <span>
+            در نسخه APK اندروید، با نگه داشتن انگشت روی صفحه اصلی گوشی و انتخاب بخش{' '}
+            <strong className="text-white">Widgets ← Ravio</strong> می‌توانید ویجت رانندگی را اضافه کنید؛ این ویجت امکان انتخاب دسته‌بندی (ترکیبی، ایران، جهان، اقتصاد، فناوری)، ساخت فوری خبر و پخش/توقف صوتی را بدون نیاز به باز کردن برنامه فراهم می‌کند.
+          </span>
+        </div>
+
         <div className="flex flex-wrap gap-2.5">
           <PWAInstallButton />
 

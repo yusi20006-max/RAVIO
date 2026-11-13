@@ -9,6 +9,7 @@ import { SourcesTab } from './components/SourcesTab';
 import { CATEGORY_OPTIONS, DEFAULT_SETTINGS } from './data/presets';
 import { useOnlineStatus } from './hooks/usePWAInstall';
 import { useRadioPlayer } from './hooks/useRadioPlayer';
+import { syncAndroidWidgetConfig } from './services/androidWidgetBridge';
 import { generateRadioScript, synthesizeGeminiAudio } from './services/aiService';
 import {
   clearOutputDirectoryHandle,
@@ -113,6 +114,10 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    void syncAndroidWidgetConfig({ settings, feeds });
+  }, [settings, feeds]);
+
   const updateSettings = useCallback((patch: Partial<StudioSettings>) => {
     setSettings((prev) => {
       const next = { ...prev, ...patch };
@@ -121,10 +126,14 @@ export default function App() {
     });
   }, []);
 
-  const handleSelectCategory = useCallback((cat: BroadcastScopeId) => {
-    setActiveCategory(cat);
-    saveActiveCategory(cat);
-  }, []);
+  const handleSelectCategory = useCallback(
+    (cat: BroadcastScopeId) => {
+      setActiveCategory(cat);
+      saveActiveCategory(cat);
+      void syncAndroidWidgetConfig({ settings, feeds, activeCategory: cat });
+    },
+    [settings, feeds]
+  );
 
   const handleToggleCombinedCategory = useCallback(
     (cat: FeedCategoryId) => {

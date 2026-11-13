@@ -104,11 +104,60 @@ async function fetchWithTimeout(url: string, timeoutMs = 10000): Promise<Respons
   }
 }
 
+export function validateClientRssUrl(rawUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl.trim());
+  } catch {
+    throw new Error('آدرس فید RSS معتبر نیست.');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('فقط پروتکل‌های HTTP و HTTPS برای فید خبری مجاز هستند.');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('آدرس فید نباید شامل نام کاربری یا رمز عبور باشد.');
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (
+    !host ||
+    host === 'localhost' ||
+    host === 'localhost.localdomain' ||
+    host === 'localdomain' ||
+    host === 'ip6-localhost' ||
+    host === 'ip6-loopback' ||
+    host === 'metadata' ||
+    host === 'metadata.google.internal' ||
+    host === 'metadata.goog' ||
+    host === 'metadata.azure.internal' ||
+    host === 'instance-data' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.localdomain') ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal') ||
+    host === '169.254.169.254' ||
+    host === '0.0.0.0' ||
+    host === '::' ||
+    host === '::1' ||
+    host.startsWith('::ffff:') ||
+    host.startsWith('fe80:') ||
+    host.startsWith('fc') ||
+    host.startsWith('fd') ||
+    host.startsWith('127.') ||
+    host.startsWith('10.') ||
+    host.startsWith('192.168.') ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+  ) {
+    throw new Error('دسترسی به آدرس‌های محلی یا شبکه خصوصی برای فید مجاز نیست.');
+  }
+  return parsed.toString();
+}
+
 export async function fetchSingleRssFeed(
   feed: RssFeedSource,
   backendServerUrl?: string
 ): Promise<RawNewsItem[]> {
-  const encodedUrl = encodeURIComponent(feed.url);
+  const safeUrl = validateClientRssUrl(feed.url);
+  const encodedUrl = encodeURIComponent(safeUrl);
 
   // 1. Primary: rss2json.com CORS-friendly JSON bridge
   try {

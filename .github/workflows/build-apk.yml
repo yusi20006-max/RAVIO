@@ -25,10 +25,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
 
       - name: Setup Java 21
@@ -46,6 +46,9 @@ jobs:
           fi
 
       - name: Run TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Run lint
         run: npm run lint
 
       - name: Run unit tests
@@ -70,9 +73,9 @@ jobs:
         run: |
           for dir in android/app/src/main/res/mipmap-*; do
             if [ -d "$dir" ]; then
-              [ -f "$dir/ic_launcher.png" ] && cp public/pwa-512x512.png "$dir/ic_launcher.png" || true
-              [ -f "$dir/ic_launcher_round.png" ] && cp public/pwa-512x512.png "$dir/ic_launcher_round.png" || true
-              [ -f "$dir/ic_launcher_foreground.png" ] && cp public/pwa-maskable-512x512.png "$dir/ic_launcher_foreground.png" || true
+              if [ -f "$dir/ic_launcher.png" ]; then cp public/pwa-512x512.png "$dir/ic_launcher.png"; fi
+              if [ -f "$dir/ic_launcher_round.png" ]; then cp public/pwa-512x512.png "$dir/ic_launcher_round.png"; fi
+              if [ -f "$dir/ic_launcher_foreground.png" ]; then cp public/pwa-maskable-512x512.png "$dir/ic_launcher_foreground.png"; fi
             fi
           done
 

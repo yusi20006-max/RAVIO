@@ -4,7 +4,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { GoogleGenAI, Type } from "@google/genai";
 import {
+  formatGeminiServerError,
   isAllowedCorsOrigin,
+  isAllowedRssContentType,
+  isLikelyXmlFeedBody,
   preparePersianTextForTts,
   SlidingWindowRateLimiter,
   validateExternalFeedUrl,
@@ -160,6 +163,7 @@ async function fetchSafeRssFeed(initialUrl: string, signal: AbortSignal): Promis
     });
 
     if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => {});
       const location = response.headers.get("location");
       if (!location) {
         throw new Error("تغییر مسیر نامعتبر در فید خبری.");
@@ -264,16 +268,31 @@ async function startServer() {
       try {
         const response = await fetchSafeRssFeed(rawUrl, controller.signal);
         if (!response.ok) {
+          await response.body?.cancel().catch(() => {});
           res.status(response.status).json({ error: `خطا در دریافت فید (${response.status})` });
           return;
         }
+        const upstreamType = response.headers.get("content-type");
+        if (!isAllowedRssContentType(upstreamType)) {
+          await response.body?.cancel().catch(() => {});
+          res.status(415).json({ error: "نوع محتوای پاسخ فید (XML/RSS) معتبر نیست." });
+          return;
+        }
         const xmlText = await readTextWithLimit(response, MAX_RSS_BYTES);
+        if (!isLikelyXmlFeedBody(xmlText)) {
+          res.status(415).json({ error: "محتوای دریافتی از آدرس فید ساختار XML/RSS معتبر ندارد." });
+          return;
+        }
         res.setHeader("Content-Type", "application/xml; charset=utf-8");
         res.send(xmlText);
       } finally {
         clearTimeout(timer);
       }
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        res.status(504).json({ error: "زمان انتظار برای دریافت فید خبری به پایان رسید." });
+        return;
+      }
       const message = err instanceof Error ? err.message : "خطا در ارتباط با فید خبری";
       const status =
         message.includes("مجاز نیست") || message.includes("نامعتبر") || message.includes("غیرمجاز")
@@ -409,8 +428,8 @@ async function startServer() {
 
       throw lastError ?? new Error("تولید متن رادیویی با خطا مواجه شد.");
     } catch (err) {
-      const message = err instanceof Error ? err.message : "خطا در ارتباط با سرویس هوش مصنوعی Gemini";
-      res.status(500).json({ error: message });
+      const mapped = formatGeminiServerError(err);
+      res.status(mapped.status).json({ error: mapped.message });
     }
   });
 
@@ -517,8 +536,8 @@ async function startServer() {
         voiceName,
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "خطا در تولید صدای رادیویی";
-      res.status(500).json({ error: message });
+      const mapped = formatGeminiServerError(err);
+      res.status(mapped.status).json({ error: mapped.message });
     }
   });
 

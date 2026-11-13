@@ -924,6 +924,11 @@ export function SettingsTab({
           </div>
         </div>
 
+        <div className="bg-[#0E1116] border border-white/10 rounded-xl p-3 text-[11px] text-zinc-400 leading-relaxed">
+          <strong className="text-zinc-200 block mb-0.5">نکته درباره اجرای زمان‌بند در پس‌زمینه:</strong>
+          زمان‌بند هر ۳۰ ثانیه و هنگام بازشدن یا بیدارشدن صفحه (و اتصال مجدد اینترنت) بررسی می‌شود؛ اما در محیط مرورگر/PWA یا زمانی که سیستم‌عامل اندروید برنامه را در پس‌زمینه کاملاً ببندد، اجرا تا بازکردن مجدد برنامه به تعویق می‌افتد (اجرای کامل با برنامه بسته نیازمند سرویس بومی WorkManager/AlarmManager اندروید است).
+        </div>
+
         <button
           onClick={onTriggerAutoRunNow}
           className="w-full min-h-[44px] rounded-xl bg-[#1A2029] hover:bg-[#232B37] text-xs sm:text-sm font-semibold text-amber-300 flex items-center justify-center gap-2 transition-colors"

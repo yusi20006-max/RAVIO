@@ -79,6 +79,56 @@ export async function safeParseJsonResponse<T>(
   return data;
 }
 
+export function formatClientAiError(err: unknown, status?: number): string {
+  const raw = err instanceof Error ? err.message : String(err || '');
+  const lower = raw.toLowerCase();
+
+  if ((err instanceof Error && err.name === 'AbortError') || lower.includes('timeout')) {
+    return 'زمان انتظار برای پاسخ سرویس هوش مصنوعی به پایان رسید (Timeout). لطفاً دوباره تلاش کنید.';
+  }
+
+  if (
+    status === 401 ||
+    status === 403 ||
+    lower.includes('invalid api key') ||
+    lower.includes('incorrect api key') ||
+    lower.includes('unauthorized')
+  ) {
+    return 'کلید API یا مجوز دسترسی نامعتبر است (خطای احراز هویت). لطفاً کلید خود را در تنظیمات بررسی کنید.';
+  }
+
+  if (status === 402 || status === 429 || lower.includes('quota') || lower.includes('rate limit')) {
+    return 'سهمیه یا محدودیت تعداد درخواست‌های سرویس هوش مصنوعی تکمیل شده است (Quota/Rate Limit). چند لحظه بعد تلاش کنید.';
+  }
+
+  if (
+    (err instanceof TypeError &&
+      (lower.includes('fetch') || lower.includes('network') || lower.includes('load failed'))) ||
+    lower.includes('failed to fetch') ||
+    lower.includes('networkerror')
+  ) {
+    return 'اتصال به سرویس هوش مصنوعی برقرار نشد. وضعیت اینترنت یا آدرس سرور را بررسی کنید.';
+  }
+
+  return raw || 'خطای غیرمنتظره در ارتباط با سرویس هوش مصنوعی';
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    throw new Error(formatClientAiError(err));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export interface GeneratedBroadcastResult {
   broadcastTitle: string;
   script: string;
@@ -213,17 +263,21 @@ export async function generateRadioScript(
       throw new Error(MISSING_APK_BACKEND_MESSAGE);
     }
 
-    const res = await fetch(buildBackendUrl('/api/gemini/script', settings.backendServerUrl), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        items,
-        categoryLabel,
-        tone: settings.broadcastTone,
-        model: settings.geminiModel,
-        generatedAtLabel,
-      }),
-    });
+    const res = await fetchWithTimeout(
+      buildBackendUrl('/api/gemini/script', settings.backendServerUrl),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items,
+          categoryLabel,
+          tone: settings.broadcastTone,
+          model: settings.geminiModel,
+          generatedAtLabel,
+        }),
+      },
+      60_000
+    );
 
     const data = await safeParseJsonResponse<{
       broadcastTitle?: string;
@@ -240,9 +294,23 @@ export async function generateRadioScript(
 
   // OpenRouter or Custom OpenAI-Compatible API
   const isOpenRouter = settings.aiProvider === 'openrouter';
+  let customBase = '';
+  if (!isOpenRouter) {
+    customBase = settings.customBaseUrl.trim().replace(/\/+$/, '');
+    let parsedCustom: URL;
+    try {
+      parsedCustom = new URL(customBase);
+    } catch {
+      throw new Error('آدرس Base URL سرویس سفارشی معتبر نیست.');
+    }
+    if (parsedCustom.protocol !== 'http:' && parsedCustom.protocol !== 'https:') {
+      throw new Error('آدرس Base URL سرویس سفارشی باید با HTTP یا HTTPS آغاز شود.');
+    }
+  }
+
   const endpoint = isOpenRouter
     ? 'https://openrouter.ai/api/v1/chat/completions'
-    : `${settings.customBaseUrl.replace(/\/+$/, '')}/chat/completions`;
+    : `${customBase}/chat/completions`;
   const apiKey = isOpenRouter ? settings.openRouterApiKey.trim() : settings.customApiKey.trim();
   const model = isOpenRouter ? settings.openRouterModel.trim() : settings.customModel.trim();
 
@@ -252,6 +320,9 @@ export async function generateRadioScript(
         ? 'کلید API سرویس OpenRouter در بخش تنظیمات وارد نشده است.'
         : 'کلید API سرویس سفارشی در بخش تنظیمات وارد نشده است.'
     );
+  }
+  if (!model) {
+    throw new Error('شناسه مدل هوش مصنوعی در بخش تنظیمات مشخص نشده است.');
   }
 
   const { systemPrompt, userContent } = buildOpenAIPrompt(
@@ -266,29 +337,33 @@ export async function generateRadioScript(
     Authorization: `Bearer ${apiKey}`,
   };
 
-  if (isOpenRouter) {
+  if (isOpenRouter && typeof window !== 'undefined' && window.location?.origin) {
     headers['HTTP-Referer'] = window.location.origin;
-    headers['X-Title'] = 'Radio Khabar Hoshmand';
+    headers['X-Title'] = 'Ravio News Radio';
   }
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userContent },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.5,
-    }),
-  });
+  const response = await fetchWithTimeout(
+    endpoint,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.5,
+      }),
+    },
+    45_000
+  );
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const errMsg = payload?.error?.message || `خطای سرویس هوش مصنوعی (${response.status})`;
-    throw new Error(errMsg);
+    const rawErrMsg = payload?.error?.message || `خطای سرویس هوش مصنوعی (${response.status})`;
+    throw new Error(formatClientAiError(new Error(rawErrMsg), response.status));
   }
 
   const content = payload?.choices?.[0]?.message?.content;
@@ -320,11 +395,15 @@ export async function synthesizeGeminiAudio(
     throw new Error(MISSING_APK_BACKEND_MESSAGE);
   }
 
-  const res = await fetch(buildBackendUrl('/api/gemini/tts', backendServerUrl), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voiceName, model }),
-  });
+  const res = await fetchWithTimeout(
+    buildBackendUrl('/api/gemini/tts', backendServerUrl),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voiceName, model }),
+    },
+    90_000
+  );
 
   const data = await safeParseJsonResponse<{
     audioBase64: string;

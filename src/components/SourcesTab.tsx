@@ -1,7 +1,7 @@
 import { ExternalLink, Plus, RefreshCw, Rss, Trash2 } from 'lucide-react';
 import { FormEvent, useState } from 'react';
 import { CATEGORY_OPTIONS } from '../data/presets';
-import { fetchSingleRssFeed } from '../services/rssService';
+import { fetchSingleRssFeed, validateClientRssUrl } from '../services/rssService';
 import { FeedCategoryId, RawNewsItem, RssFeedSource } from '../types/radio';
 
 interface SourcesTabProps {
@@ -44,12 +44,15 @@ export function SourcesTab({
     const trimmedUrl = customUrl.trim();
     const trimmedLabel = customLabel.trim() || 'فید سفارشی کاربر';
 
-    if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://')) {
-      setFormError('لطفاً آدرس معتبر با http:// یا https:// وارد کنید.');
+    let safeUrl: string;
+    try {
+      safeUrl = validateClientRssUrl(trimmedUrl);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'لطفاً آدرس معتبر با http:// یا https:// وارد کنید.');
       return;
     }
 
-    onAddCustomFeed(trimmedLabel, trimmedUrl, customCategory);
+    onAddCustomFeed(trimmedLabel, safeUrl, customCategory);
     onSelectCategory(customCategory);
     setCustomLabel('');
     setCustomUrl('');

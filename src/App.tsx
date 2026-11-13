@@ -394,10 +394,14 @@ export default function App() {
       if (document.visibilityState === 'visible') checkSchedule();
     };
     document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', checkSchedule);
+    window.addEventListener('online', checkSchedule);
 
     return () => {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', checkSchedule);
+      window.removeEventListener('online', checkSchedule);
     };
   }, [
     activeCategory,

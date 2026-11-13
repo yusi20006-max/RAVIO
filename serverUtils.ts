@@ -55,9 +55,14 @@ export function preparePersianTextForTts(raw: string): string {
 const BLOCKED_HOSTNAMES = new Set([
   "localhost",
   "localhost.localdomain",
+  "localdomain",
+  "ip6-localhost",
+  "ip6-loopback",
   "metadata",
   "metadata.google.internal",
   "metadata.goog",
+  "metadata.azure.internal",
+  "instance-data",
   "169.254.169.254",
   "0.0.0.0",
 ]);
@@ -70,6 +75,43 @@ function ipv4ToInt(ip: string): number {
 function isIpv4InCidr(ip: string, cidrBase: string, prefixLen: number): boolean {
   const mask = prefixLen === 0 ? 0 : (~0 << (32 - prefixLen)) >>> 0;
   return (ipv4ToInt(ip) & mask) === (ipv4ToInt(cidrBase) & mask);
+}
+
+function parseIpv6Hextets(ip: string): number[] | null {
+  const halves = ip.split("::");
+  if (halves.length > 2) return null;
+
+  const parseSegment = (segment: string): number[] | null => {
+    if (!segment) return [];
+    const tokens = segment.split(":");
+    const out: number[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token.includes(".")) {
+        if (i !== tokens.length - 1 || !net.isIPv4(token)) return null;
+        const v4 = token.split(".").map(Number);
+        out.push((v4[0] << 8) | v4[1], (v4[2] << 8) | v4[3]);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/i.test(token)) return null;
+        out.push(parseInt(token, 16));
+      }
+    }
+    return out;
+  };
+
+  const left = parseSegment(halves[0]);
+  if (!left) return null;
+
+  if (halves.length === 1) {
+    return left.length === 8 ? left : null;
+  }
+
+  const right = parseSegment(halves[1]);
+  if (!right) return null;
+  const missing = 8 - (left.length + right.length);
+  if (missing < 1) return null;
+
+  return [...left, ...Array<number>(missing).fill(0), ...right];
 }
 
 export function isPrivateOrReservedIp(ipRaw: string): boolean {
@@ -104,27 +146,33 @@ export function isPrivateOrReservedIp(ipRaw: string): boolean {
   }
 
   if (version === 6) {
-    if (ip === "::" || ip === "::1") return true;
-    // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1)
-    if (ip.startsWith("::ffff:")) {
-      const mapped = ip.slice(7);
-      if (net.isIPv4(mapped)) {
-        return isPrivateOrReservedIp(mapped);
-      }
-      const hexParts = mapped.split(":");
-      if (hexParts.length === 2) {
-        const hi = parseInt(hexParts[0], 16);
-        const lo = parseInt(hexParts[1], 16);
-        if (!Number.isNaN(hi) && !Number.isNaN(lo)) {
-          const v4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-          return isPrivateOrReservedIp(v4);
-        }
-      }
+    const h = parseIpv6Hextets(ip);
+    if (!h) return true;
+
+    const allZeroPrefix6 = h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0;
+    // Unspecified :: or loopback ::1
+    if (allZeroPrefix6 && h[5] === 0 && h[6] === 0 && (h[7] === 0 || h[7] === 1)) {
+      return true;
     }
-    // Unique local (fc00::/7) and link-local (fe80::/10) and multicast (ff00::/8)
-    if (ip.startsWith("fc") || ip.startsWith("fd")) return true;
-    if (ip.startsWith("fe8") || ip.startsWith("fe9") || ip.startsWith("fea") || ip.startsWith("feb")) return true;
-    if (ip.startsWith("ff")) return true;
+    // IPv4-mapped ::ffff:0:0/96 or deprecated IPv4-compatible ::/96
+    if (allZeroPrefix6 && (h[5] === 0xffff || h[5] === 0)) {
+      const embeddedV4 = `${(h[6] >> 8) & 0xff}.${h[6] & 0xff}.${(h[7] >> 8) & 0xff}.${h[7] & 0xff}`;
+      return isPrivateOrReservedIp(embeddedV4);
+    }
+    // NAT64 64:ff9b::/96
+    if (h[0] === 0x0064 && h[1] === 0xff9b && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0) {
+      const embeddedV4 = `${(h[6] >> 8) & 0xff}.${h[6] & 0xff}.${(h[7] >> 8) & 0xff}.${h[7] & 0xff}`;
+      return isPrivateOrReservedIp(embeddedV4);
+    }
+    // Unique local fc00::/7
+    if ((h[0] & 0xfe00) === 0xfc00) return true;
+    // Link-local fe80::/10
+    if ((h[0] & 0xffc0) === 0xfe80) return true;
+    // Multicast ff00::/8
+    if ((h[0] & 0xff00) === 0xff00) return true;
+    // Documentation 2001:db8::/32
+    if (h[0] === 0x2001 && h[1] === 0x0db8) return true;
+
     return false;
   }
 
@@ -153,6 +201,7 @@ export function validateFeedUrlSyntax(rawUrl: string): URL {
     BLOCKED_HOSTNAMES.has(host) ||
     host.endsWith(".local") ||
     host.endsWith(".localhost") ||
+    host.endsWith(".localdomain") ||
     host.endsWith(".internal")
   ) {
     throw new Error("دسترسی به آدرس‌های داخلی یا محلی مجاز نیست.");
@@ -183,6 +232,86 @@ export async function validateExternalFeedUrl(rawUrl: string): Promise<URL> {
   }
 
   return parsed;
+}
+
+const ALLOWED_RSS_MIME_TYPES = new Set([
+  "application/rss+xml",
+  "application/atom+xml",
+  "application/xml",
+  "text/xml",
+  "application/rdf+xml",
+  "text/plain",
+]);
+
+export function isAllowedRssContentType(contentTypeHeader: string | null | undefined): boolean {
+  if (!contentTypeHeader || !contentTypeHeader.trim()) {
+    return true;
+  }
+  const mime = contentTypeHeader.split(";")[0].trim().toLowerCase();
+  return ALLOWED_RSS_MIME_TYPES.has(mime);
+}
+
+export function isLikelyXmlFeedBody(rawBody: string): boolean {
+  const sample = rawBody.replace(/^\uFEFF/, "").trimStart().slice(0, 600).toLowerCase();
+  if (!sample) return false;
+  if (sample.startsWith("<!doctype html") || sample.startsWith("<html")) {
+    return false;
+  }
+  return (
+    sample.startsWith("<?xml") ||
+    sample.includes("<rss") ||
+    sample.includes("<feed") ||
+    sample.includes("<rdf:rdf")
+  );
+}
+
+export function formatGeminiServerError(err: unknown): { status: number; message: string } {
+  const raw = err instanceof Error ? err.message : String(err || "");
+  const sanitized = raw.replace(/AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED]").trim();
+  const lower = sanitized.toLowerCase();
+
+  if (
+    lower.includes("401") ||
+    lower.includes("403") ||
+    lower.includes("api_key_invalid") ||
+    lower.includes("api key not valid") ||
+    lower.includes("permission_denied") ||
+    lower.includes("gemini_api_key")
+  ) {
+    return {
+      status: 401,
+      message: "کلید API سرویس Gemini در تنظیمات سرور نامعتبر است یا تعریف نشده است.",
+    };
+  }
+
+  if (
+    lower.includes("429") ||
+    lower.includes("resource_exhausted") ||
+    lower.includes("quota") ||
+    lower.includes("rate limit")
+  ) {
+    return {
+      status: 429,
+      message: "سهمیه یا محدودیت نرخ درخواست سرویس Gemini تکمیل شده است. لطفاً کمی بعد تلاش کنید.",
+    };
+  }
+
+  if (
+    (err instanceof Error && err.name === "AbortError") ||
+    lower.includes("timeout") ||
+    lower.includes("timed out") ||
+    lower.includes("etimedout")
+  ) {
+    return {
+      status: 504,
+      message: "زمان انتظار برای پاسخ سرویس Gemini به پایان رسید.",
+    };
+  }
+
+  return {
+    status: 500,
+    message: sanitized || "خطا در ارتباط با سرویس هوش مصنوعی Gemini",
+  };
 }
 
 export class SlidingWindowRateLimiter {

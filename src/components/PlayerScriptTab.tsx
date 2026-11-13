@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { CATEGORY_OPTIONS } from '../data/presets';
+import { hasConfiguredBackend, isCapacitorNative } from '../services/aiService';
 import {
   BroadcastEdition,
   BroadcastScopeId,
@@ -68,6 +69,7 @@ interface PlayerScriptTabProps {
   onSwitchOperationMode: (mode: 'server' | 'offline') => void;
   onDownloadAudio: (edition: BroadcastEdition) => void;
   onOpenCardsTab: () => void;
+  onOpenServerSettings: () => void;
 }
 
 function formatTime(sec: number): string {
@@ -134,6 +136,7 @@ export function PlayerScriptTab({
   onSwitchOperationMode,
   onDownloadAudio,
   onOpenCardsTab,
+  onOpenServerSettings,
 }: PlayerScriptTabProps) {
   const [scriptViewMode, setScriptViewMode] = useState<'teleprompter' | 'edit'>('teleprompter');
   const [copiedScript, setCopiedScript] = useState(false);
@@ -154,6 +157,10 @@ export function PlayerScriptTab({
 
   const isBusy = pipelineStage !== 'idle' && pipelineStage !== 'error';
   const isOfflineMode = settings.aiProvider === 'offline';
+  const needsApkBackendSetup =
+    isCapacitorNative() &&
+    settings.aiProvider === 'gemini' &&
+    !hasConfiguredBackend(settings.backendServerUrl);
   const isScriptOutOfSync = Boolean(
     currentEdition?.hasAudio &&
       currentEdition.audioScriptSnapshot !== undefined &&
@@ -283,9 +290,51 @@ export function PlayerScriptTab({
           </div>
         )}
 
+        {needsApkBackendSetup && !pipelineError && (
+          <div className="bg-amber-500/10 border border-amber-500/35 rounded-xl p-3 space-y-2.5">
+            <p className="text-xs text-amber-200 leading-relaxed">
+              نسخه اندروید بدون آدرس سرور نمی‌تواند به Gemini متصل شود؛ آدرس سرور را وارد کنید یا با یک لمس به حالت آفلاین بروید.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={onOpenServerSettings}
+                className="min-h-[38px] px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold transition-colors whitespace-nowrap"
+              >
+                تنظیم آدرس سرور
+              </button>
+              <button
+                type="button"
+                onClick={() => onSwitchOperationMode('offline')}
+                className="min-h-[38px] px-3 rounded-lg bg-[#1A2029] hover:bg-[#232B37] border border-white/10 text-zinc-200 text-xs font-semibold transition-colors whitespace-nowrap"
+              >
+                استفاده در حالت آفلاین
+              </button>
+            </div>
+          </div>
+        )}
+
         {pipelineError && (
-          <div className="bg-red-950/40 border border-red-500/30 rounded-xl px-3.5 py-2.5 text-xs text-red-200">
-            {pipelineError}
+          <div className="bg-red-950/40 border border-red-500/30 rounded-xl px-3.5 py-2.5 space-y-2 text-xs text-red-200">
+            <p className="leading-relaxed">{pipelineError}</p>
+            {needsApkBackendSetup && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={onOpenServerSettings}
+                  className="min-h-[36px] px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold transition-colors whitespace-nowrap"
+                >
+                  تنظیم آدرس سرور
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSwitchOperationMode('offline')}
+                  className="min-h-[36px] px-3 rounded-lg bg-white/10 hover:bg-white/15 text-white text-xs font-semibold transition-colors whitespace-nowrap"
+                >
+                  رفتن به حالت آفلاین
+                </button>
+              </div>
+            )}
           </div>
         )}
       </section>

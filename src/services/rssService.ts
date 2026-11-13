@@ -1,5 +1,5 @@
 import { FeedCategoryId, RawNewsItem, RssFeedSource } from '../types/radio';
-import { buildBackendUrl } from './aiService';
+import { buildBackendUrl, hasConfiguredBackend, isCapacitorNative } from './aiService';
 
 function stripHtml(input: string): string {
   if (!input) return '';
@@ -160,7 +160,27 @@ export async function fetchSingleRssFeed(
     // Fall through to server-side proxy fallback
   }
 
-  // 3. Final fallback: Built-in Express RSS proxy (/api/rss)
+  // 3. Fallback: codetabs.com CORS bridge + DOMParser
+  try {
+    const res = await fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodedUrl}`, 10000);
+    if (res.ok) {
+      const xmlText = await res.text();
+      if (xmlText && xmlText.includes('<') && !xmlText.trim().toLowerCase().startsWith('<!doctype html')) {
+        const parsed = parseXmlRss(xmlText, feed.category, feed.label);
+        if (parsed.length > 0) return parsed;
+      }
+    }
+  } catch {
+    // Fall through to server-side proxy fallback
+  }
+
+  // 4. Final fallback: Built-in Express RSS proxy (/api/rss)
+  if (isCapacitorNative() && !hasConfiguredBackend(backendServerUrl)) {
+    throw new Error(
+      `دریافت فید «${feed.label}» از پل عمومی ناموفق بود و آدرس سرور در تنظیمات وارد نشده است.`
+    );
+  }
+
   const serverRes = await fetchWithTimeout(
     buildBackendUrl(`/api/rss?url=${encodedUrl}`, backendServerUrl),
     12000
@@ -169,6 +189,9 @@ export async function fetchSingleRssFeed(
     throw new Error(`دریافت فید «${feed.label}» با خطا مواجه شد.`);
   }
   const xmlText = await serverRes.text();
+  if (xmlText.trim().toLowerCase().startsWith('<!doctype html') || xmlText.trim().toLowerCase().startsWith('<html')) {
+    throw new Error(`پاسخ فید «${feed.label}» به‌جای XML یک صفحه HTML بود. آدرس سرور را بررسی کنید.`);
+  }
   return parseXmlRss(xmlText, feed.category, feed.label);
 }
 

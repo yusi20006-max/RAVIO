@@ -4,7 +4,7 @@ import { CarModeOverlay } from './components/CarModeOverlay';
 import { NewsCardsTab } from './components/NewsCardsTab';
 import { PlayerScriptTab } from './components/PlayerScriptTab';
 import { PWAInstallButton } from './components/PWAInstallButton';
-import { SettingsTab } from './components/SettingsTab';
+import { SettingsSectionId, SettingsTab } from './components/SettingsTab';
 import { SourcesTab } from './components/SourcesTab';
 import { CATEGORY_OPTIONS, DEFAULT_SETTINGS } from './data/presets';
 import { useOnlineStatus } from './hooks/usePWAInstall';
@@ -65,6 +65,10 @@ function getCurrentHHMM(): string {
 export default function App() {
   const isOnline = useOnlineStatus();
   const [activeTab, setActiveTab] = useState<ActiveTab>('player');
+  const [requestedSettingsSection, setRequestedSettingsSection] = useState<{
+    id: SettingsSectionId;
+    nonce: number;
+  } | null>(null);
   const [carModeOpen, setCarModeOpen] = useState(false);
 
   const [settings, setSettings] = useState<StudioSettings>(() => loadSettings());
@@ -84,6 +88,7 @@ export default function App() {
   const outputDirHandleRef = useRef<unknown>(null);
 
   const isPipelineRunningRef = useRef(false);
+  const lastAutoAttemptAtRef = useRef<number>(0);
 
   // Load IndexedDB offline archive & optional output directory handle on startup
   useEffect(() => {
@@ -233,8 +238,8 @@ export default function App() {
       targetScope: BroadcastScopeId,
       includeAudioGeneration: boolean,
       options?: { autoSaveFile?: boolean }
-    ) => {
-      if (isPipelineRunningRef.current) return;
+    ): Promise<boolean> => {
+      if (isPipelineRunningRef.current) return false;
       isPipelineRunningRef.current = true;
       player.stopAll();
       setPipelineError(null);
@@ -342,10 +347,12 @@ export default function App() {
         }
 
         if (audioWarning) setPipelineError(audioWarning);
+        return true;
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'خطای غیرمنتظره در ساخت بخش خبری';
         setPipelineError(msg);
         setPipelineStage('error');
+        return false;
       } finally {
         isPipelineRunningRef.current = false;
       }
@@ -362,14 +369,21 @@ export default function App() {
       const todayKey = getTodayDateKey();
       if (settings.lastAutoRunDate === todayKey) return;
 
+      const nowMs = Date.now();
+      if (nowMs - lastAutoAttemptAtRef.current < 5 * 60_000) return;
+
       const nowHHMM = getCurrentHHMM();
       if (nowHHMM >= settings.autoScheduleTime) {
-        updateSettings({ lastAutoRunDate: todayKey });
+        lastAutoAttemptAtRef.current = nowMs;
         const targetScope: BroadcastScopeId = settings.autoScheduleUseCombined
           ? 'combined'
           : activeCategory;
-        runBroadcastPipeline(targetScope, settings.autoGenerateAudioOnSchedule, {
+        void runBroadcastPipeline(targetScope, settings.autoGenerateAudioOnSchedule, {
           autoSaveFile: settings.autoSavePodcastFileOnSchedule,
+        }).then((succeeded) => {
+          if (succeeded) {
+            updateSettings({ lastAutoRunDate: todayKey });
+          }
         });
       }
     };
@@ -678,6 +692,10 @@ export default function App() {
             onSwitchOperationMode={handleSwitchOperationMode}
             onDownloadAudio={handleDownloadAudio}
             onOpenCardsTab={() => setActiveTab('cards')}
+            onOpenServerSettings={() => {
+              setRequestedSettingsSection({ id: 'ai', nonce: Date.now() });
+              setActiveTab('settings');
+            }}
           />
         )}
 
@@ -736,6 +754,7 @@ export default function App() {
             onClearOutputDirectory={handleClearOutputDirectory}
             onClearOldEditions={handleClearOldEditions}
             onImportBackup={handleImportBackup}
+            requestedSection={requestedSettingsSection}
           />
         )}
       </main>

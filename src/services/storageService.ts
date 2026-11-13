@@ -78,6 +78,7 @@ export interface StudioBackupPayload {
   app: 'ravio';
   version: 1;
   exportedAt: string;
+  includesApiKeys?: boolean;
   activeCategory: BroadcastScopeId;
   settings: StudioSettings;
   feeds: RssFeedSource[];
@@ -86,19 +87,33 @@ export interface StudioBackupPayload {
 export function createBackupPayload(
   settings: StudioSettings,
   feeds: RssFeedSource[],
-  activeCategory: BroadcastScopeId
+  activeCategory: BroadcastScopeId,
+  options?: { includeApiKeys?: boolean }
 ): StudioBackupPayload {
+  const includeApiKeys = Boolean(options?.includeApiKeys);
+  const safeSettings: StudioSettings = includeApiKeys
+    ? settings
+    : {
+        ...settings,
+        openRouterApiKey: '',
+        customApiKey: '',
+      };
+
   return {
     app: 'ravio',
     version: 1,
     exportedAt: new Date().toISOString(),
+    includesApiKeys: includeApiKeys,
     activeCategory,
-    settings,
+    settings: safeSettings,
     feeds,
   };
 }
 
-export function parseBackupPayload(rawText: string): StudioBackupPayload {
+export function parseBackupPayload(
+  rawText: string,
+  existingSettings?: StudioSettings
+): StudioBackupPayload {
   const parsed = JSON.parse(rawText) as Partial<StudioBackupPayload>;
   if (!parsed || typeof parsed !== 'object' || !parsed.settings || !Array.isArray(parsed.feeds)) {
     throw new Error('ساختار فایل پشتیبان راویو معتبر نیست.');
@@ -117,12 +132,23 @@ export function parseBackupPayload(rawText: string): StudioBackupPayload {
       ? parsed.activeCategory
       : 'tech_ai';
 
+  const mergedSettings: StudioSettings = { ...DEFAULT_SETTINGS, ...parsed.settings };
+  if (existingSettings) {
+    if (!mergedSettings.openRouterApiKey && existingSettings.openRouterApiKey) {
+      mergedSettings.openRouterApiKey = existingSettings.openRouterApiKey;
+    }
+    if (!mergedSettings.customApiKey && existingSettings.customApiKey) {
+      mergedSettings.customApiKey = existingSettings.customApiKey;
+    }
+  }
+
   return {
     app: 'ravio',
     version: 1,
     exportedAt: typeof parsed.exportedAt === 'string' ? parsed.exportedAt : new Date().toISOString(),
+    includesApiKeys: Boolean(parsed.includesApiKeys),
     activeCategory,
-    settings: { ...DEFAULT_SETTINGS, ...parsed.settings },
+    settings: mergedSettings,
     feeds: validFeeds,
   };
 }

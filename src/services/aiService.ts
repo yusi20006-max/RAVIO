@@ -6,17 +6,77 @@ import {
 } from '../types/radio';
 import { formatPersianBroadcastDateTime } from './fileSaveService';
 
-export function buildBackendUrl(path: string, backendServerUrl?: string): string {
-  const custom = (backendServerUrl || '').trim().replace(/\/+$/, '');
+export function isCapacitorNative(): boolean {
+  if (typeof window === 'undefined') return false;
+  const win = window as unknown as {
+    Capacitor?: { isNativePlatform?: () => boolean };
+  };
+  if (win.Capacitor?.isNativePlatform?.()) return true;
+  if (window.location.protocol === 'capacitor:' || window.location.protocol === 'file:') {
+    return true;
+  }
+  return window.location.hostname === 'localhost' && window.location.port === '';
+}
+
+export function resolveBackendBaseUrl(backendServerUrl?: string): string {
+  let custom = (backendServerUrl || '').trim().replace(/\/+$/, '');
   if (custom) {
-    return `${custom}${path}`;
+    if (!/^https?:\/\//i.test(custom)) {
+      custom = `https://${custom}`;
+    }
+    return custom;
   }
   const envUrl =
     typeof import.meta !== 'undefined' &&
     (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_BACKEND_URL
-      ? (import.meta as unknown as { env: Record<string, string> }).env.VITE_BACKEND_URL.trim().replace(/\/+$/, '')
+      ? (import.meta as unknown as { env: Record<string, string> }).env.VITE_BACKEND_URL
+          .trim()
+          .replace(/\/+$/, '')
       : '';
-  return envUrl ? `${envUrl}${path}` : path;
+  return envUrl;
+}
+
+export function hasConfiguredBackend(backendServerUrl?: string): boolean {
+  return Boolean(resolveBackendBaseUrl(backendServerUrl));
+}
+
+export function buildBackendUrl(path: string, backendServerUrl?: string): string {
+  const base = resolveBackendBaseUrl(backendServerUrl);
+  return base ? `${base}${path}` : path;
+}
+
+export const MISSING_APK_BACKEND_MESSAGE =
+  'در نسخه APK اندروید، برای استفاده از سرور هوشمند ابتدا در «تنظیمات ← ۱. هوش مصنوعی و اتصال سرور» آدرس سرور برنامه را وارد کنید، یا «حالت آفلاین مستقل» / کلید OpenRouter را فعال نمایید.';
+
+export async function safeParseJsonResponse<T>(
+  res: Response,
+  fallbackError: string,
+  usedCustomBackend: boolean
+): Promise<T> {
+  const rawText = await res.text();
+  const trimmed = rawText.trim();
+
+  if (trimmed.startsWith('<')) {
+    if (isCapacitorNative() && !usedCustomBackend) {
+      throw new Error(MISSING_APK_BACKEND_MESSAGE);
+    }
+    throw new Error(
+      'پاسخ دریافتی از سرور معتبر نیست (به‌جای JSON صفحه HTML دریافت شد). لطفاً آدرس سرور را در تنظیمات بررسی کنید یا از دسترس‌پذیر بودن عمومی سرور مطمئن شوید.'
+    );
+  }
+
+  let data: T & { error?: string };
+  try {
+    data = JSON.parse(trimmed || '{}') as T & { error?: string };
+  } catch {
+    throw new Error(fallbackError);
+  }
+
+  if (!res.ok) {
+    throw new Error(data.error || fallbackError);
+  }
+
+  return data;
 }
 
 export interface GeneratedBroadcastResult {
@@ -148,6 +208,11 @@ export async function generateRadioScript(
   }
 
   if (settings.aiProvider === 'gemini') {
+    const hasBackend = hasConfiguredBackend(settings.backendServerUrl);
+    if (isCapacitorNative() && !hasBackend) {
+      throw new Error(MISSING_APK_BACKEND_MESSAGE);
+    }
+
     const res = await fetch(buildBackendUrl('/api/gemini/script', settings.backendServerUrl), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -160,10 +225,11 @@ export async function generateRadioScript(
       }),
     });
 
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'خطا در تولید متن رادیویی با Gemini');
-    }
+    const data = await safeParseJsonResponse<{
+      broadcastTitle?: string;
+      script?: string;
+      cards?: Array<{ id?: string; persianTitle?: string; persianSummary?: string; topic?: string }>;
+    }>(res, 'خطا در تولید متن رادیویی با Gemini', hasBackend);
 
     return {
       broadcastTitle: data.broadcastTitle || `بخش خبری ${categoryLabel}`,
@@ -249,16 +315,21 @@ export async function synthesizeGeminiAudio(
   model: string,
   backendServerUrl?: string
 ): Promise<{ blob: Blob; mimeType: string }> {
+  const hasBackend = hasConfiguredBackend(backendServerUrl);
+  if (isCapacitorNative() && !hasBackend) {
+    throw new Error(MISSING_APK_BACKEND_MESSAGE);
+  }
+
   const res = await fetch(buildBackendUrl('/api/gemini/tts', backendServerUrl), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, voiceName, model }),
   });
 
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'خطا در تبدیل متن به گفتار');
-  }
+  const data = await safeParseJsonResponse<{
+    audioBase64: string;
+    mimeType?: string;
+  }>(res, 'خطا در تبدیل متن به گفتار', hasBackend);
 
   const binaryStr = atob(data.audioBase64);
   const bytes = new Uint8Array(binaryStr.length);

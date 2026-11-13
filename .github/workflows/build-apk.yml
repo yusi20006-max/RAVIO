@@ -29,6 +29,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
 
       - name: Setup Java 21
         uses: actions/setup-java@v4
@@ -37,7 +38,18 @@ jobs:
           java-version: "21"
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Run TypeScript check
+        run: npm run lint
+
+      - name: Run unit tests
+        run: npm test
 
       - name: Install Capacitor Android packages
         run: npm install --no-save @capacitor/core @capacitor/cli @capacitor/android

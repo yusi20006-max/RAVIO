@@ -2,11 +2,22 @@ import "dotenv/config";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
+import {
+  isAllowedCorsOrigin,
+  preparePersianTextForTts,
+  SlidingWindowRateLimiter,
+  validateExternalFeedUrl,
+} from "./serverUtils.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
+const MAX_RSS_BYTES = 2 * 1024 * 1024; // 2 MB cap for RSS/Atom XML responses
+const MAX_GEMINI_ITEMS = 20;
+const MAX_TTS_CHARS = 12000;
+
+const geminiRateLimiter = new SlidingWindowRateLimiter(25, 10 * 60_000);
+const rssRateLimiter = new SlidingWindowRateLimiter(80, 5 * 60_000);
 
 function getGeminiClient(apiVersion?: string) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -68,57 +79,6 @@ function buildWavHeader(pcmLength: number, sampleRate = 24000, numChannels = 1, 
   return header;
 }
 
-const ACRONYM_TO_PERSIAN: Array<[RegExp, string]> = [
-  [/\bAI\b/gi, "هوش مصنوعی"],
-  [/\bUSA\b/gi, "آمریکا"],
-  [/\bU\.S\.A?\.?\b/gi, "آمریکا"],
-  [/\bUK\b/gi, "بریتانیا"],
-  [/\bEU\b/gi, "اتحادیه اروپا"],
-  [/\bUN\b/gi, "سازمان ملل"],
-  [/\bNATO\b/gi, "ناتو"],
-  [/\bBBC\b/gi, "بی‌بی‌سی"],
-  [/\bCNN\b/gi, "سی‌ان‌ان"],
-  [/\bCENTCOM\b/gi, "سِنت‌کام"],
-  [/\bADNOC\b/gi, "اَدنوک"],
-  [/\bIMF\b/gi, "صندوق بین‌المللی پول"],
-  [/\bGDP\b/gi, "تولید ناخالص داخلی"],
-  [/\bCEO\b/gi, "مدیرعامل"],
-  [/\bAPI\b/gi, "ای‌پی‌آی"],
-  [/\bRSS\b/gi, "آر‌اس‌اس"],
-  [/\bGPS\b/gi, "جی‌پی‌اس"],
-  [/\bVIP\b/gi, "وی‌آی‌پی"],
-];
-
-const PERSIAN_DIGITS = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
-
-function toPersianDigits(str: string): string {
-  return str.replace(/\d/g, (d) => PERSIAN_DIGITS[Number(d)] ?? d);
-}
-
-function preparePersianTextForTts(raw: string): string {
-  let out = raw
-    .replace(/https?:\/\/\S+/gi, " ")
-    .replace(/[*#_`[\]<>~|]/g, " ")
-    .replace(/(\d+(?:[.,]\d+)?)\s*%/g, "$1 درصد")
-    .replace(/\$\s*(\d+(?:[.,]\d+)?)/g, "$1 دلار")
-    .replace(/€\s*(\d+(?:[.,]\d+)?)/g, "$1 یورو")
-    .replace(/£\s*(\d+(?:[.,]\d+)?)/g, "$1 پوند")
-    .replace(/\s*&\s*/g, " و ")
-    .replace(/\.{2,}/g, ".")
-    .replace(/[()«»"]/g, " ");
-
-  for (const [pattern, replacement] of ACRONYM_TO_PERSIAN) {
-    out = out.replace(pattern, replacement);
-  }
-
-  out = toPersianDigits(out)
-    .replace(/\s+([،.؟!؛:])/g, "$1")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return out;
-}
-
 function splitTextForTts(text: string, maxChars = 2200): string[] {
   const cleaned = text.replace(/\s+/g, " ").trim();
   if (cleaned.length <= maxChars) return [cleaned];
@@ -149,19 +109,138 @@ function splitTextForTts(text: string, maxChars = 2200): string[] {
   return chunks.length > 0 ? chunks : [cleaned];
 }
 
+async function readTextWithLimit(response: globalThis.Response, maxBytes: number): Promise<string> {
+  const contentLengthHeader = response.headers.get("content-length");
+  if (contentLengthHeader) {
+    const declared = Number(contentLengthHeader);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      throw new Error("حجم فید خبری بیش از حد مجاز است.");
+    }
+  }
+
+  if (!response.body) {
+    const txt = await response.text();
+    if (Buffer.byteLength(txt, "utf8") > maxBytes) {
+      throw new Error("حجم فید خبری بیش از حد مجاز است.");
+    }
+    return txt;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new Error("حجم فید خبری بیش از حد مجاز (۲ مگابایت) است.");
+      }
+      chunks.push(value);
+    }
+  }
+
+  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+}
+
+async function fetchSafeRssFeed(initialUrl: string, signal: AbortSignal): Promise<globalThis.Response> {
+  let currentUrl = (await validateExternalFeedUrl(initialUrl)).toString();
+
+  for (let redirects = 0; redirects <= 3; redirects++) {
+    const response = await fetch(currentUrl, {
+      signal,
+      redirect: "manual",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; RavioNewsBot/1.0)",
+        Accept: "application/rss+xml, application/xml, text/xml, */*",
+      },
+    });
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location) {
+        throw new Error("تغییر مسیر نامعتبر در فید خبری.");
+      }
+      const nextUrl = new URL(location, currentUrl).toString();
+      currentUrl = (await validateExternalFeedUrl(nextUrl)).toString();
+      continue;
+    }
+
+    return response;
+  }
+
+  throw new Error("تعداد تغییر مسیرهای آدرس فید بیش از حد مجاز است.");
+}
+
+function getClientIp(req: express.Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0].trim();
+  }
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
+
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: "4mb" }));
+  app.set("trust proxy", 1);
+  app.use(express.json({ limit: "2mb" }));
 
-  // Allow Android APK / Capacitor WebView origins to call /api/*
+  // Scoped CORS policy: allows same-origin, configured ALLOWED_ORIGINS, and Capacitor APK WebViews
   app.use("/api", (req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    const origin = req.headers.origin;
+    const reqHost = req.headers.host;
+    const allowed = isAllowedCorsOrigin(
+      origin,
+      reqHost,
+      process.env.ALLOWED_ORIGINS,
+      process.env.APP_URL
+    );
+
+    res.setHeader("Vary", "Origin");
+    if (origin && allowed) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Ravio-Secret");
+    }
+
     if (req.method === "OPTIONS") {
-      res.status(204).end();
+      res.status(allowed ? 204 : 403).end();
       return;
     }
+
+    if (origin && !allowed) {
+      res.status(403).json({ error: "دسترسی از این مبدأ (Origin) مجاز نیست." });
+      return;
+    }
+
+    next();
+  });
+
+  // Optional API secret + per-IP rate limiting for Gemini endpoints
+  app.use("/api/gemini", (req, res, next) => {
+    const requiredSecret = (process.env.RAVIO_API_SECRET || "").trim();
+    if (requiredSecret) {
+      const authHeader = String(req.headers.authorization || "");
+      const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+      const altHeader = String(req.headers["x-ravio-secret"] || "").trim();
+      if (bearer !== requiredSecret && altHeader !== requiredSecret) {
+        res.status(401).json({ error: "کلید دسترسی سرور نامعتبر یا وارد نشده است." });
+        return;
+      }
+    }
+
+    const rate = geminiRateLimiter.consume(`gemini:${getClientIp(req)}`);
+    if (!rate.allowed) {
+      res.setHeader("Retry-After", String(rate.retryAfterSec));
+      res.status(429).json({
+        error: `تعداد درخواست‌ها بیش از حد مجاز است. لطفاً ${rate.retryAfterSec} ثانیه دیگر تلاش کنید.`,
+      });
+      return;
+    }
+
     next();
   });
 
@@ -169,37 +248,38 @@ async function startServer() {
     res.json({ ok: true, timestamp: Date.now() });
   });
 
-  // Server-side RSS fetch fallback for resilience
+  // Server-side RSS fetch fallback with SSRF + redirect + response size protection
   app.get("/api/rss", async (req, res) => {
-    const rawUrl = String(req.query.url || "");
-    if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
-      res.status(400).json({ error: "آدرس فید نامعتبر است." });
+    const rate = rssRateLimiter.consume(`rss:${getClientIp(req)}`);
+    if (!rate.allowed) {
+      res.setHeader("Retry-After", String(rate.retryAfterSec));
+      res.status(429).json({ error: "تعداد درخواست فید بیش از حد مجاز است." });
       return;
     }
 
+    const rawUrl = String(req.query.url || "");
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 12000);
-      const response = await fetch(rawUrl, {
-        signal: controller.signal,
-        headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; RadioKhabarBot/1.0)",
-          Accept: "application/rss+xml, application/xml, text/xml, */*",
-        },
-      });
-      clearTimeout(timer);
-
-      if (!response.ok) {
-        res.status(response.status).json({ error: `خطا در دریافت فید (${response.status})` });
-        return;
+      try {
+        const response = await fetchSafeRssFeed(rawUrl, controller.signal);
+        if (!response.ok) {
+          res.status(response.status).json({ error: `خطا در دریافت فید (${response.status})` });
+          return;
+        }
+        const xmlText = await readTextWithLimit(response, MAX_RSS_BYTES);
+        res.setHeader("Content-Type", "application/xml; charset=utf-8");
+        res.send(xmlText);
+      } finally {
+        clearTimeout(timer);
       }
-
-      const xmlText = await response.text();
-      res.setHeader("Content-Type", "application/xml; charset=utf-8");
-      res.send(xmlText);
     } catch (err) {
       const message = err instanceof Error ? err.message : "خطا در ارتباط با فید خبری";
-      res.status(502).json({ error: message });
+      const status =
+        message.includes("مجاز نیست") || message.includes("نامعتبر") || message.includes("غیرمجاز")
+          ? 400
+          : 502;
+      res.status(status).json({ error: message });
     }
   });
 
@@ -218,6 +298,15 @@ async function startServer() {
         res.status(400).json({ error: "هیچ خبری برای پردازش ارسال نشده است." });
         return;
       }
+
+      const boundedItems = items.slice(0, MAX_GEMINI_ITEMS).map((it) => ({
+        id: String(it.id || "").slice(0, 120),
+        title: String(it.title || "").slice(0, 350),
+        description: String(it.description || "").slice(0, 700),
+        source: String(it.source || "").slice(0, 120),
+        link: String(it.link || "").slice(0, 500),
+        pubDate: String(it.pubDate || "").slice(0, 80),
+      }));
 
       const ai = getGeminiClient();
 
@@ -251,7 +340,7 @@ async function startServer() {
 6. سبک اجرا: ${toneGuide}
 7. خروجی را دقیقاً مطابق اسکیما JSON برگردانید.`;
 
-      const promptPayload = items
+      const promptPayload = boundedItems
         .map(
           (item, index) =>
             `[${index + 1}] ID: ${item.id}\nSource: ${item.source}\nDate: ${item.pubDate}\nTitle: ${item.title}\nSummary: ${item.description}\nLink: ${item.link}`
@@ -336,6 +425,10 @@ async function startServer() {
 
       if (!text || !text.trim()) {
         res.status(400).json({ error: "متنی برای تبدیل به گفتار ارسال نشده است." });
+        return;
+      }
+      if (text.length > MAX_TTS_CHARS) {
+        res.status(400).json({ error: "طول متن ارسالی بیش از حد مجاز است." });
         return;
       }
 
@@ -430,6 +523,7 @@ async function startServer() {
   });
 
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
@@ -519,7 +613,11 @@ export class ErrorOverlay extends BaseEl {
   } else {
     const distPath = path.join(__dirname, "dist");
     app.use(express.static(distPath));
-    app.get("/{*path}", (_req, res) => {
+    app.get("*", (req, res, next) => {
+      if (req.path.startsWith("/api/")) {
+        next();
+        return;
+      }
       res.sendFile(path.join(distPath, "index.html"));
     });
   }

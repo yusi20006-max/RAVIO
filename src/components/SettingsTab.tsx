@@ -31,7 +31,14 @@ import {
   GEMINI_VOICES,
   OPENROUTER_MODELS,
 } from '../data/presets';
-import { buildBackendUrl, synthesizeGeminiAudio } from '../services/aiService';
+import {
+  buildBackendUrl,
+  hasConfiguredBackend,
+  isCapacitorNative,
+  MISSING_APK_BACKEND_MESSAGE,
+  safeParseJsonResponse,
+  synthesizeGeminiAudio,
+} from '../services/aiService';
 import {
   buildPodcastFilename,
   supportsDirectoryPicker,
@@ -67,9 +74,10 @@ interface SettingsTabProps {
   onClearOutputDirectory: () => void;
   onClearOldEditions: () => void;
   onImportBackup: (payload: StudioBackupPayload) => void;
+  requestedSection?: { id: SettingsSectionId; nonce: number } | null;
 }
 
-type SettingsSectionId = 'ai' | 'voice' | 'scheduler' | 'archive' | 'pwa_apk' | 'about';
+export type SettingsSectionId = 'ai' | 'voice' | 'scheduler' | 'archive' | 'pwa_apk' | 'about';
 
 interface AccordionCardProps {
   id: SettingsSectionId;
@@ -138,8 +146,11 @@ export function SettingsTab({
   onClearOutputDirectory,
   onClearOldEditions,
   onImportBackup,
+  requestedSection,
 }: SettingsTabProps) {
-  const [openSection, setOpenSection] = useState<SettingsSectionId | null>('voice');
+  const [openSection, setOpenSection] = useState<SettingsSectionId | null>(
+    requestedSection?.id || 'voice'
+  );
   const [serverTestStatus, setServerTestStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
   const [serverTestMessage, setServerTestMessage] = useState<string>('');
   const [customPreviewText, setCustomPreviewText] = useState<string>('');
@@ -147,11 +158,18 @@ export function SettingsTab({
   const [previewingVoice, setPreviewingVoice] = useState<GeminiVoiceName | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [backupMessage, setBackupMessage] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
+  const [includeApiKeysInBackup, setIncludeApiKeysInBackup] = useState(false);
   const [copiedGitHub, setCopiedGitHub] = useState(false);
 
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewCacheRef = useRef<Record<string, string>>({});
   const importInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (requestedSection?.id) {
+      setOpenSection(requestedSection.id);
+    }
+  }, [requestedSection]);
 
   useEffect(() => {
     const cacheRef = previewCacheRef;
@@ -237,13 +255,21 @@ export function SettingsTab({
   const handleTestServerConnection = async () => {
     setServerTestStatus('testing');
     setServerTestMessage('');
+    const hasBackend = hasConfiguredBackend(settings.backendServerUrl);
+    if (isCapacitorNative() && !hasBackend) {
+      setServerTestStatus('error');
+      setServerTestMessage(MISSING_APK_BACKEND_MESSAGE);
+      return;
+    }
+
     const targetUrl = buildBackendUrl('/api/health', settings.backendServerUrl);
     try {
       const res = await fetch(targetUrl);
-      if (!res.ok) {
-        throw new Error(`پاسخ نامعتبر سرور (${res.status})`);
-      }
-      const data = (await res.json()) as { ok?: boolean };
+      const data = await safeParseJsonResponse<{ ok?: boolean }>(
+        res,
+        `پاسخ نامعتبر سرور (${res.status})`,
+        hasBackend
+      );
       if (!data.ok) {
         throw new Error('پاسخ سلامت سرور تایید نشد.');
       }
@@ -258,11 +284,18 @@ export function SettingsTab({
   };
 
   const handleExportBackup = () => {
-    const payload = createBackupPayload(settings, feeds, activeCategory);
+    const payload = createBackupPayload(settings, feeds, activeCategory, {
+      includeApiKeys: includeApiKeysInBackup,
+    });
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const dateTag = new Date().toISOString().slice(0, 10);
     triggerBlobDownload(blob, `ravio-backup-${dateTag}.json`);
-    setBackupMessage({ type: 'ok', text: 'فایل پشتیبان تنظیمات و فیدها دانلود شد.' });
+    setBackupMessage({
+      type: 'ok',
+      text: includeApiKeysInBackup
+        ? 'فایل پشتیبان همراه با کلیدهای API شخصی دانلود شد؛ این فایل را محرمانه نگه دارید.'
+        : 'فایل پشتیبان تنظیمات و فیدها دانلود شد (کلیدهای API شخصی برای امنیت حذف شدند).',
+    });
   };
 
   const handleImportFile = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -271,7 +304,7 @@ export function SettingsTab({
     if (!file) return;
     try {
       const text = await file.text();
-      const payload = parseBackupPayload(text);
+      const payload = parseBackupPayload(text, settings);
       onImportBackup(payload);
       setBackupMessage({
         type: 'ok',
@@ -979,6 +1012,21 @@ export function SettingsTab({
             className="hidden"
           />
         </div>
+
+        <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#0E1116] border border-white/10 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={includeApiKeysInBackup}
+            onChange={(e) => setIncludeApiKeysInBackup(e.target.checked)}
+            className="w-4 h-4 mt-0.5 accent-amber-500 rounded shrink-0"
+          />
+          <span className="text-xs text-zinc-300 leading-relaxed">
+            <strong className="text-zinc-100 block">
+              شامل کلیدهای API شخصی در فایل پشتیبان (اختیاری)
+            </strong>
+            به‌صورت پیش‌فرض کلیدهای OpenRouter و سرویس سفارشی برای امنیت از فایل JSON حذف می‌شوند؛ تنها زمانی این گزینه را فعال کنید که قصد انتقال شخصی به دستگاه دیگری دارید.
+          </span>
+        </label>
 
         {backupMessage && (
           <p

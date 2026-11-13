@@ -1,4 +1,4 @@
-name = "ravio-api"
-main = "cloudflare/worker.mjs"
+name = "ravio"
 compatibility_date = "2026-11-13"
-workers_dev = true
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = "./dist"

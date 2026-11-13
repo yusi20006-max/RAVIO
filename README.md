@@ -41,28 +41,109 @@
 
 ---
 
-## استقرار رایگان روی Cloudflare
+## استقرار رایگان روی Cloudflare Pages
 
-راویو برای انتشار عمومی از Cloudflare Pages به‌همراه Pages Functions استفاده می‌کند؛ رابط React/Vite به‌صورت Static منتشر می‌شود و APIهای زیر روی همان دامنه اجرا می‌شوند:
+راویو از یک معماری یکپارچه روی Cloudflare Pages استفاده می‌کند: رابط React/Vite به‌صورت فایل‌های Static منتشر می‌شود و درخواست‌های API از طریق Pages Functions به کد مشترک `cloudflare/worker.mjs` می‌رسند. بنابراین وب‌اپ و API روی یک دامنه قرار می‌گیرند و برای نسخه وب نیازی به تنظیم جداگانه Base URL یا سرور Express نیست.
 
-- `GET /api/health` — سلامت سرویس و وضعیت پیکربندی Gemini
-- `GET /api/rss?url=...` — پروکسی RSS با محدودیت حجم، بررسی URL و کنترل Redirect
-- `POST /api/gemini/script` — تولید بولتن خبری فارسی
-- `POST /api/gemini/tts` — تولید فایل صوتی WAV
+**آدرس Production پروژه:** [https://ravio.pages.dev](https://ravio.pages.dev)
 
-### تنظیمات محیطی Cloudflare
+### معماری و مسیرهای API
 
-در تنظیمات پروژه Pages، متغیرهای محیطی Production را تنظیم کنید:
+- `GET /api/health` — بررسی سلامت API و اعلام اینکه Secret مربوط به Gemini تنظیم شده است یا نه.
+- `GET /api/rss?url=<RSS_URL>` — دریافت فید از طریق پروکسی RSS؛ URLهای محلی/خصوصی، محتوای نامعتبر و حجم بیش از حد رد می‌شوند.
+- `POST /api/gemini/script` — تبدیل خبرها به متن بولتن فارسی.
+- `POST /api/gemini/tts` — تولید خروجی صوتی WAV از متن.
 
-| متغیر | نوع | کاربرد |
+مسیر اتصال Pages Functions در فایل `functions/api/[[path]].ts` تعریف شده و منطق API در `cloudflare/worker.mjs` قرار دارد. تنظیمات سازگاری Cloudflare در `wrangler.toml` و نسخه Node در `.nvmrc` ثبت شده‌اند.
+
+### پیش‌نیازها
+
+- حساب Cloudflare با دسترسی به Workers & Pages.
+- مخزن GitHub: [yusi20006-max/RAVIO](https://github.com/yusi20006-max/RAVIO).
+- کلید Gemini API از Google AI Studio؛ این کلید را فقط به‌صورت Secret در Cloudflare وارد کنید، نه در GitHub، فایل‌های پروژه یا APK.
+
+### راه‌اندازی اولیه در Cloudflare
+
+پروژه `ravio` قبلاً در حساب Cloudflare ایجاد و به مخزن GitHub متصل شده است. اگر می‌خواهید آن را از ابتدا بسازید یا اتصال را دوباره برقرار کنید:
+
+1. وارد [Cloudflare Dashboard](https://dash.cloudflare.com/) شوید و از بخش **Workers & Pages** گزینه **Create application → Pages → Connect to Git** را انتخاب کنید.
+2. حساب GitHub را متصل کنید و مخزن **`yusi20006-max/RAVIO`** را انتخاب کنید.
+3. شاخه Production را روی **`main`** قرار دهید.
+4. تنظیمات Build را مطابق جدول زیر وارد کنید.
+
+| گزینه | مقدار |
+| --- | --- |
+| Framework preset | Vite |
+| Production branch | `main` |
+| Build command | `npm ci && npm run build` |
+| Build output directory | `dist` |
+| Root directory | `/` |
+| Node.js version | `22` |
+
+5. پروژه را ایجاد کنید. Cloudflare پس از هر Push به شاخه `main`، Build و Deployment جدید را به‌صورت خودکار اجرا می‌کند.
+6. در بخش **Settings → Functions → Compatibility Flags**، پرچم `nodejs_compat` را برای محیط Production فعال نگه دارید. این مقدار در `wrangler.toml` نیز تعریف شده است.
+7. در بخش **Settings → Variables and Secrets**، متغیرهای محیطی Production را تنظیم کنید.
+
+### تنظیم متغیرها و Secretها
+
+در مسیر **Workers & Pages → ravio → Settings → Variables and Secrets → Production**:
+
+| نام | نوع | مقدار |
 | --- | --- | --- |
-| `GEMINI_API_KEY` | Secret | کلید Gemini؛ فقط سمت سرور |
-| `ALLOWED_ORIGINS` | Plain text | `https://ravio.pages.dev,capacitor://localhost,https://localhost` |
+| `GEMINI_API_KEY` | **Secret** | کلید خصوصی Gemini API شما |
+| `ALLOWED_ORIGINS` | Plain text | `capacitor://localhost,https://localhost` |
 | `NODE_VERSION` | Plain text | `22` |
 
-`RAVIO_API_SECRET` عمداً تنظیم نشده است؛ نسخه فعلی APK این هدر را ارسال نمی‌کند. برای وب‌اپ، درخواست‌های API هم‌مبدأ هستند و نیازی به تنظیم Base URL ندارند. در ساخت APK، آدرس `https://ravio.pages.dev` به‌صورت پیش‌فرض در خروجی ثبت می‌شود.
+نکات امنیتی و پیکربندی:
 
-**محدودیت پلن رایگان:** Workers/Pages سهمیه و محدودیت مصرف دارند؛ اجرای TTS و درخواست‌های Gemini علاوه بر سهمیه Cloudflare، از سهمیه و هزینه احتمالی حساب Google AI استفاده می‌کند.
+- مقدار `GEMINI_API_KEY` را با گزینه **Encrypt / Secret** ثبت کنید. این کلید نباید در کد فرانت‌اند، فایل `.env` عمومی، GitHub Secrets غیرضروری یا تنظیمات قابل مشاهده APK قرار گیرد.
+- درخواست‌های وب هم‌مبدأ به‌صورت خودکار مجازند؛ نیازی نیست دامنه `https://ravio.pages.dev` را دستی به `ALLOWED_ORIGINS` اضافه کنید.
+- دو Origin مربوط به Capacitor در فهرست بالا برای درخواست‌های APK در نظر گرفته شده‌اند. اگر از دامنه سفارشی یا Origin دیگری استفاده می‌کنید، آن را با کاما به این مقدار اضافه کنید.
+- `RAVIO_API_SECRET` را در استقرار فعلی تنظیم نکنید؛ APK فعلی این Secret را به‌عنوان هدر ارسال نمی‌کند و فعال‌کردن آن باعث ردشدن درخواست‌های Gemini از APK خواهد شد.
+- پس از تغییر Secretها یا متغیرهای محیطی، یک Deployment جدید اجرا کنید تا تنظیمات در نسخه فعال اعمال شوند.
+
+برای پروژه موجود می‌توانید مستقیماً وارد [تنظیمات پروژه ravio در Cloudflare](https://dash.cloudflare.com/65449de9c053ae9b57ba192402c1f6a6/pages/view/ravio/settings) شوید.
+
+### بررسی موفقیت استقرار
+
+پس از پایان Deployment، این آدرس را در مرورگر باز کنید:
+
+```text
+https://ravio.pages.dev/api/health
+```
+
+پاسخ سالم باید JSON شامل `"ok": true` و `"service": "ravio-api"` باشد. پس از ثبت Secret، مقدار `"geminiConfigured": true` نیز باید دیده شود. اگر این مقدار `false` است، نام Secret، محیط Production و اجرای Deployment جدید را بررسی کنید.
+
+سپس صفحه اصلی را باز کنید:
+
+```text
+https://ravio.pages.dev
+```
+
+اگر API در دسترس نیست، ابتدا وضعیت آخرین Deployment و Build log را در تب **Deployments** بررسی کنید؛ وضعیت ساخته‌شدن پروژه در Dashboard به‌تنهایی به معنی موفقیت Build و انتشار نسخه Production نیست.
+
+### اتصال نسخه اندروید (Capacitor)
+
+نسخه APK باید به دامنه Pages متصل شود، نه به آدرس محلی توسعه‌دهنده:
+
+```text
+https://ravio.pages.dev
+```
+
+- Workflow ساخت APK مقدار پیش‌فرض Backend را روی همین دامنه قرار می‌دهد.
+- در GitHub وارد **Actions → Build Android APK (Ravio) → Run workflow** شوید.
+- در صورت نیاز، ورودی `backend_url` را با آدرس سرور خود جایگزین کنید؛ در غیر این صورت مقدار پیش‌فرض را نگه دارید.
+- پس از موفقیت Workflow، فایل `app-debug.apk` را از Artifact با نام `ravio-android-debug-apk` دریافت و نصب کنید.
+- در صورت استفاده از آدرس دیگر، همان Base URL را در تنظیمات اتصال سرور داخل برنامه وارد کنید.
+
+کلید Gemini در APK ذخیره نمی‌شود؛ درخواست‌های Gemini و RSS به API مستقرشده ارسال می‌شوند. اگر نسخه وب کار می‌کند اما APK به API دسترسی ندارد، مقدار Base URL و Originهای Capacitor در `ALLOWED_ORIGINS` را بررسی کنید.
+
+### محدودیت‌های پلن رایگان و هزینه‌ها
+
+- میزبانی Static و اجرای API روی Cloudflare با سهمیه و محدودیت‌های پلن Free انجام می‌شود؛ محدودیت درخواست، زمان CPU و حجم مصرفی Cloudflare پابرجاست.
+- رایگان بودن Cloudflare به معنی رایگان بودن استفاده از Gemini API نیست. تولید متن و به‌ویژه TTS تابع سهمیه، محدودیت نرخ و تعرفه حساب Google AI است.
+- در صورت دریافت خطای `429`، سهمیه یا محدودیت نرخ Gemini را بررسی کنید؛ خطای `503` در مسیر Gemini معمولاً به تنظیم‌نشدن `GEMINI_API_KEY` اشاره دارد.
+- این معماری به سرویس پولی Render یا سرور Node.js دائمی نیاز ندارد؛ با این حال در پلن Free تضمین دسترس‌پذیری یا ظرفیت نامحدود وجود ندارد.
 
 ## فناوری‌های استفاده‌شده
 
